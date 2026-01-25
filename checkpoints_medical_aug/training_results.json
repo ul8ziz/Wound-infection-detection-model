@@ -1,0 +1,55 @@
+{
+  "config": {
+    "data_root": "../../data",
+    "ann_file_train": "../data/splits/train.json",
+    "ann_file_val": "../data/splits/val.json",
+    "ann_file_full": "../data/annotations.json",
+    "output_dir": "checkpoints_medical_aug",
+    "seed": 42,
+    "batch_size": 4,
+    "num_workers": 0,
+    "epochs": 50,
+    "lr": 0.005,
+    "image_size": [
+      512,
+      512
+    ],
+    "use_medical_augmentation": true,
+    "preserve_marker": true,
+    "intensity": "moderate"
+  },
+  "train_losses": [
+    3.6535540878772736
+  ],
+  "val_losses": [
+    2.6664124727249146
+  ],
+  "metrics_per_epoch": [
+    {
+      "bbox_AP": 0.0,
+      "bbox_AP50": 0.0,
+      "bbox_AP75": 0.0,
+      "segm_AP": 0.0,
+      "segm_AP50": 0.0,
+      "segm_AP75": 0.0,
+      "combined_AP50": 0.0
+    }
+  ],
+  "best_metric": 0.0,
+  "best_epoch": 1,
+  "training_start": "2026-01-13T13:52:22.341930",
+  "training_time": 614.8309991359711,
+  "device": "cpu",
+  "num_classes": 17,
+  "training_end": "2026-01-13T14:02:37.173832",
+  "error": "save_checkpoint() got an unexpected keyword argument 'best_metric_name'",
+  "final_metrics": {
+    "bbox_AP": 0.0,
+    "bbox_AP50": 0.0,
+    "bbox_AP75": 0.0,
+    "segm_AP": 0.0,
+    "segm_AP50": 0.0,
+    "segm_AP75": 0.0,
+    "combined_AP50": 0.0
+  }
+}

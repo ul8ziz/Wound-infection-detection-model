@@ -2,9 +2,10 @@
 
 **كشف علامات العدوى في الجروح الجراحية باستخدام Deep Learning**
 
-## ⭐ مشروع كامل في ملف Jupyter Notebook واحد!
+## ⭐ مشروع منظم مع سكريبتات Python و Jupyter Notebooks
 
-**`notebooks/complete_pipeline.ipynb`** - كل شيء من البداية للنهاية
+**`notebooks/train_model.py`** - سكريبت تدريب موحد شامل  
+**`notebooks/training_pipeline.ipynb`** - Notebook للتدريب والتحليل
 
 ---
 
@@ -13,19 +14,35 @@
 ```
 master_pro/
 ├── data/                          # البيانات (241 task)
-│   ├── task_0/ ... task_240/
+│   ├── task_0/ ... task_240/     # البيانات الأصلية
 │   ├── project.json
-│   ├── annotations.json           # يُنشأ بعد Part 4
-│   └── splits/                    # يُنشأ بعد Part 4
-│       ├── train.json
-│       ├── val.json
-│       └── test.json
+│   ├── annotations.json           # جميع البيانات (COCO format)
+│   ├── splits/                    # تقسيمات البيانات
+│   │   ├── train.json
+│   │   ├── val.json
+│   │   └── test.json
+│   └── augmented/                 # البيانات المعززة (اختياري)
+│       ├── annotations_augmented.json
+│       └── images/
 │
 ├── notebooks/
-│   └── complete_pipeline.ipynb    # ⭐⭐ المشروع الكامل!
+│   ├── train_model.py             # ⭐⭐ سكريبت التدريب الموحد (يدمج جميع وظائف التدريب)
+│   ├── training_pipeline.ipynb    # Notebook للتدريب والتحليل
+│   ├── pipeline_utils.py          # دوال معالجة البيانات
+│   └── INFERENCE_GUIDE.md         # دليل الاستدلال والتحليل
 │
-├── checkpoints/                    # النماذج (بعد Part 6)
-│   └── best_model.pth
+├── scripts/                        # سكريبتات مساعدة
+│   ├── apply_augmentation_only.py # تطبيق augmentation على البيانات
+│   └── augmentation_strategy.py   # استراتيجية augmentation
+│
+├── docs/                           # التوثيق
+│   └── DATA_AUGMENTATION_GUIDE.md # دليل augmentation
+│
+├── checkpoints/                    # النماذج المحفوظة
+│   ├── best.pt                     # أفضل نموذج
+│   └── last.pt                     # آخر checkpoint
+├── checkpoints_medical_aug/        # نماذج مع augmentation
+├── checkpoints_advanced/           # نماذج متقدمة
 │
 ├── results/                        # النتائج (بعد Part 8)
 │   └── *_result.json
@@ -82,7 +99,23 @@ pip install -r requirements.txt
 
 > **💡 نصيحة:** الأفضل استخدام بيئة Python منفصلة (setup_environment.bat)
 
-### 2. افتح Notebook
+### 2. طريقة الاستخدام
+
+#### الطريقة 1: سكريبت Python (موصى به) 🚀
+
+**التدريب المباشر:**
+```bash
+# من مجلد notebooks
+cd notebooks
+python train_model.py
+```
+
+**أو من جذر المشروع:**
+```bash
+python notebooks/train_model.py
+```
+
+#### الطريقة 2: Jupyter Notebook
 
 **إذا استخدمت البيئة الافتراضية:**
 ```bash
@@ -99,73 +132,112 @@ run_jupyter.bat
 # Windows: venv\Scripts\activate
 # Linux/Mac: source venv/bin/activate
 
-jupyter notebook notebooks/complete_pipeline.ipynb
+jupyter notebook notebooks/training_pipeline.ipynb
 ```
 
-### 3. شغّل الخلايا بالترتيب
+### 3. شغّل الخلايا بالترتيب (في Notebook)
 
-في Notebook:
-
-1. ✅ **Part 1-3**: Setup (Import + Config + Functions)
-2. ⭐ **Part 4**: تحضير البيانات (مرة واحدة فقط)
-3. 📊 **Part 4.5**: تحليل البيانات (اختياري)
-4. ✅ **Part 5**: إعداد النموذج
-5. ⭐⭐ **Part 6**: التدريب (4-6 ساعات)
-6. ✅ **Part 7**: Prediction Functions
-7. ⭐ **Part 8**: التنبؤ (عدّل `image_path` أولاً)
+1. ✅ **Setup**: Import + Config
+2. ⭐ **Data Loading**: تحميل البيانات
+3. ✅ **Model Building**: بناء النموذج
+4. ⭐⭐ **Training**: التدريب (4-6 ساعات)
+5. ✅ **Evaluation**: التقييم
+6. ⭐ **Inference**: التنبؤ والتحليل
 
 ---
 
-## 📝 محتويات Notebook
+## 📝 محتويات المشروع
 
-### Part 1: Import Libraries
-كل المكتبات المطلوبة
+### `train_model.py` - سكريبت التدريب الموحد
 
-### Part 2: Configuration
-`CONFIG` dictionary - عدّل الإعدادات هنا
+هذا الملف يدمج جميع وظائف التدريب في مكان واحد:
 
-### Part 3: Data Processing
-- `convert_cvat_to_coco()` - تحويل CVAT → COCO
-- `split_dataset()` - تقسيم البيانات
-- `WoundDataset` - PyTorch Dataset
+**وظائف بناء النموذج:**
+- `build_model()` - بناء نموذج Mask R-CNN
 
-### Part 4: Run Data Preparation ⭐
-شغّل مرة واحدة لتحضير البيانات
+**وظائف التدريب:**
+- `train_one_epoch()` - تدريب epoch واحد
+- `validate_one_epoch()` - التحقق من epoch واحد
+- `main()` - دالة التدريب الرئيسية الكاملة
 
-### Part 4.5: Data Analysis (اختياري)
-إحصائيات سريعة عن البيانات
+**وظائف التقييم:**
+- `evaluate_metrics()` - تقييم المقاييس (COCO metrics)
 
-### Part 5: Model Building & Training
-- `build_model()` - Mask R-CNN
-- Datasets & DataLoaders
-- Training functions
-- Optimizer & Scheduler
+**وظائف Checkpoints:**
+- `save_checkpoint()` - حفظ checkpoint
+- `load_checkpoint()` - تحميل checkpoint
 
-### Part 6: Start Training ⭐⭐
-حلقة التدريب الكاملة
+**وظائف Inference:**
+- `run_inference()` - تشغيل inference على صورة واحدة
+- `run_wound_inference()` - inference خاص بحساب مساحة الجرح والعدوى
 
-### Part 7: Prediction Functions
-- `calculate_wound_area()` - حساب المساحة
-- `detect_infection()` - كشف العدوى
-- `predict_image()` - التنبؤ
-- `visualize_prediction()` - الرسم
+**وظائف التقارير:**
+- `generate_report()` - توليد تقرير Markdown شامل
 
-### Part 8: Run Prediction ⭐
-عدّل `image_path` ثم شغّل
+### `training_pipeline.ipynb` - Notebook للتدريب
+
+**Setup & Configuration:**
+- Import libraries
+- CONFIG dictionary - عدّل الإعدادات هنا
+
+**Data Loading:**
+- تحميل البيانات من `data/splits/` أو `data/augmented/`
+- دعم البيانات المعززة
+
+**Model Building:**
+- بناء النموذج باستخدام `train_model.build_model()`
+- إعداد Optimizer & Scheduler
+
+**Training:**
+- حلقة التدريب الكاملة
+- حفظ checkpoints تلقائياً
+
+**Evaluation & Inference:**
+- تقييم النموذج
+- تشغيل inference على صور جديدة
+- حساب مساحة الجرح وكشف العدوى
 
 ---
 
 ## ⚙️ التخصيص
 
-عدّل `CONFIG` في **Part 2**:
+### في `train_model.py`:
+
+عدّل `CONFIG` في الملف:
 
 ```python
 CONFIG = {
-    'epochs': 50,              # عدد الـ epochs
-    'batch_size': 2,           # حجم الـ batch
-    'learning_rate': 0.001,    # معدل التعلم
-    'image_size': [1024, 1024], # حجم الصورة
-    'device': 'cuda',          # أو 'cpu'
+    # Data paths
+    "data_root": "../data",
+    "ann_file_train": "../data/splits/train.json",
+    "ann_file_val": "../data/splits/val.json",
+    
+    # Training settings
+    "output_dir": "../checkpoints_medical_aug",
+    "seed": 42,
+    "batch_size": 4,
+    "epochs": 50,
+    "lr": 0.005,
+    "image_size": (512, 512),
+    
+    # Medical Augmentation
+    "use_medical_augmentation": True,
+    "preserve_marker": True,
+    "intensity": "moderate"  # "light", "moderate", "aggressive"
+}
+```
+
+### في `training_pipeline.ipynb`:
+
+عدّل `CONFIG` في الخلية الأولى:
+
+```python
+CONFIG = {
+    "epochs": 50,
+    "batch_size": 4,
+    "lr": 0.005,
+    "image_size": (512, 512),
+    "use_medical_augmentation": False,  # True للـ augmentation أثناء التدريب
 }
 ```
 
@@ -173,17 +245,20 @@ CONFIG = {
 
 ## 📊 المخرجات
 
-### بعد Part 4:
-- `data/annotations.json` - كل البيانات
+### بعد تحضير البيانات:
+- `data/annotations.json` - كل البيانات (COCO format)
 - `data/splits/train.json` - بيانات التدريب
 - `data/splits/val.json` - بيانات التحقق
 - `data/splits/test.json` - بيانات الاختبار
+- `data/augmented/` - البيانات المعززة (اختياري)
 
-### بعد Part 6:
-- `checkpoints/best_model.pth` - أفضل نموذج
-- `checkpoints/checkpoint_epoch_*.pth` - checkpoints دورية
+### بعد التدريب:
+- `checkpoints_medical_aug/best.pt` - أفضل نموذج
+- `checkpoints_medical_aug/last.pt` - آخر checkpoint
+- `checkpoints_medical_aug/training_results.json` - نتائج التدريب
+- `checkpoints_medical_aug/training_report.md` - تقرير شامل
 
-### بعد Part 8:
+### بعد Inference:
 ```json
 {
   "wound_area_cm2": 25.3,
@@ -319,6 +394,49 @@ CONFIG['epochs'] = 10  # بدلاً من 50
 
 **ابدأ الآن!** 🚀
 
+**الطريقة السريعة (سكريبت Python):**
 ```bash
-jupyter notebook notebooks/complete_pipeline.ipynb
+cd notebooks
+python train_model.py
 ```
+
+**أو باستخدام Jupyter Notebook:**
+```bash
+jupyter notebook notebooks/training_pipeline.ipynb
+```
+
+---
+
+## 📚 الملفات الرئيسية
+
+### `notebooks/train_model.py`
+سكريبت Python موحد يحتوي على جميع وظائف التدريب والتقييم والاستدلال. يمكن تشغيله مباشرة أو استيراد دواله في notebooks أخرى.
+
+**الاستخدام:**
+```python
+# تشغيل مباشر
+python notebooks/train_model.py
+
+# أو استيراد الدوال
+from train_model import build_model, train_one_epoch, evaluate_metrics
+```
+
+### `notebooks/pipeline_utils.py`
+دوال معالجة البيانات وإنشاء datasets:
+- `create_dataset()` - إنشاء PyTorch Dataset
+- `make_dataloaders()` - إنشاء DataLoaders
+- `get_transforms()` - تحويلات الصور
+- `WoundDataset` - Dataset class
+
+### `scripts/apply_augmentation_only.py`
+سكريبت لتطبيق augmentation على البيانات وحفظها:
+```bash
+cd scripts
+python apply_augmentation_only.py
+```
+
+### `docs/DATA_AUGMENTATION_GUIDE.md`
+دليل شامل لاستراتيجية augmentation الطبية.
+
+### `notebooks/INFERENCE_GUIDE.md`
+دليل استخدام وظائف inference والتحليل.
