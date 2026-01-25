@@ -1,0 +1,253 @@
+---
+alwaysApply: true
+---
+
+You are an AI coding assistant working INSIDE the repository:
+`Wound-infection-detection-model`
+
+Your primary goal is to help develop and refactor this project in a way that is
+consistent with its current design and with the scientific goals of a Master's
+thesis on postoperative wound infection detection.
+
+====================================================
+1. PROJECT CONTEXT
+====================================================
+
+- This is a medical computer-vision project.
+- Main task: detect and segment postoperative wounds and a 3×3 cm reference
+  marker on clinical photographs, and use them to compute wound area in cm².
+- Secondary tasks (where data allows): segment clinically relevant regions
+  such as granulation, fibrin, necrosis, edema, etc., and later derive
+  infection indicators from these segmentations.
+
+- The project uses:
+  - Python 3.13+ (as specified in requirements.txt)
+  - PyTorch 2.0+ with torchvision (Mask R-CNN ResNet50-FPN as main model)
+  - Albumentations for image/mask augmentations
+  - COCO-style annotations (including polygons) merged from many CVAT tasks
+  - Custom training pipeline: `training_engine.py`
+  - Data handling and transforms: `pipeline_utils.py`
+  - Data augmentation utilities: `augmentation_strategy.py`,
+    `apply_augmentation_only.py` and related scripts.
+  - Jupyter notebooks for experiments and iterative development.
+
+- Code organization and versioning:
+  - **IMPORTANT**: The `notebooks/` directory contains multiple experimental
+    versions, each representing a different approach or iteration.
+  - Each subdirectory (e.g., `notebooks/1.13.2025/`, `notebooks/1.8.2025/`)
+    represents a separate experimental phase where the user tests different
+    methods to find the best approach that yields optimal results.
+  - Latest version: `notebooks/1.13.2025/` (most recent pipeline with fixes)
+  - Previous versions: `notebooks/1.8.2025/` and others (for reference/comparison)
+  - Standalone notebooks: `complete_pipeline.ipynb`, `advanced_wound_detection.ipynb`
+  - **When modifying code, identify which version the user is working with and
+    prefer the latest version unless explicitly asked otherwise.**
+  - Each version may have its own `pipeline_utils.py`, `training_engine.py`, etc.
+
+- Dataset:
+  - Original CVAT export: many folders `data/task_0` … `data/task_239`
+    each containing `data/`, `annotations.json`, `task.json`, etc.
+  - Labels include Russian names:
+      "ВсяРана" (entire wound), "Метка для размерности" (3×3 marker),
+      and other tissue/infection labels (fibrin, necrosis, granulation, etc.).
+  - English equivalents may be used in code: "AllWound", "SizeMarker", etc.
+  - Key classes: AllWound (entire wound), SizeMarker (3×3 cm reference),
+    EdemaZone, HyperemiaZone, NecrosisZone, GranulationZone, Fibrin, SutureZone
+  - There is also an OFFLINE augmented dataset:
+      `notebooks/1.13.2025/data_augmented/images`
+      and `annotations_augmented.json`
+    where each original image has 3 augmented variants.
+  - Dataset splits: After data preparation, splits are created in `data/splits/`
+    (train.json, val.json, test.json). Maintain consistent split ratios.
+
+- Infection detection logic:
+  - Images with "-not-" in filename indicate no infection.
+  - Infection indicators: EdemaZone, HyperemiaZone, NecrosisZone
+  - The model should learn to distinguish textures/features between infected
+    and non-infected wounds.
+  - Final output includes JSON with infection status, confidence scores, and
+    wound area in cm².
+
+====================================================
+2. GENERAL BEHAVIOUR
+====================================================
+
+- Assume the user is an advanced CS/AI student but working under time pressure.
+- Prefer **small, focused changes** over large rewrites.
+- When editing existing files, try to preserve:
+  - Public function signatures and CLI arguments.
+  - Compatibility with existing notebooks and scripts.
+- When adding new functionality, prefer:
+  - New functions or lightweight helpers,
+  - Or new modules, rather than breaking old ones.
+
+- Always consider the MEDICAL context:
+  - Do NOT propose augmentations that would destroy the geometry of the
+    3×3 cm marker or make wound shapes unrealistic (no strong warps,
+    no extreme perspective transforms).
+  - Flips, small rotations, scale, moderate color/brightness changes are OK.
+
+- When suggesting model changes, keep them realistic for a single GPU
+  (Mask R-CNN, reasonable image sizes like 512–1024 px, batch sizes that fit).
+
+====================================================
+3. CODE STYLE & QUALITY
+====================================================
+
+- Use modern Python style:
+  - Type hints for new functions and public APIs.
+  - Short, clear docstrings explaining purpose, args, and returns.
+  - Prefer `logging` over `print` for non-debug messages.
+  - Follow PEP8 where practical.
+
+- For PyTorch code:
+  - Make sure tensors and models are moved to the correct `device`.
+  - Encapsulate training/validation loops in functions.
+  - Use `torch.no_grad()` and `model.eval()` for inference utilities.
+  - Avoid hard-coding paths and hyperparameters inside library code; pass them
+    as function arguments or configs where possible.
+
+====================================================
+4. DATA PIPELINE & AUGMENTATION RULES
+====================================================
+
+- Respect the existing dataset API:
+  - `WoundDataset` in `pipeline_utils.py` expects COCO-style annotations.
+  - It uses Albumentations with masks (and sometimes bboxes).
+  - Do NOT change the basic contract of `__getitem__` (image, target dict).
+
+- When modifying or adding transforms:
+  - Ensure that polygons/masks and (if used) bboxes remain aligned with the
+    image after augmentation.
+  - When using `A.BboxParams`, match the expected format ("coco" vs "pascal_voc").
+  - Preserve the 3×3 marker geometry; do not apply extreme perspective or
+    elastic deformations to it.
+
+- For OFFLINE augmentation:
+  - Scripts like `apply_augmentation_only.py` generate new images +
+    `annotations_augmented.json`.
+  - When changing these scripts, make sure:
+    - `file_name` fields in the JSON correctly match the relative paths
+      under the chosen root (e.g. `images/IMG_....jpg`).
+    - Image IDs and annotation IDs remain unique and consistent.
+
+- For ONLINE augmentation:
+  - `get_medical_augmentation_pipeline` in `augmentation_strategy.py`
+    defines transform pipelines with intensity levels ("light", "moderate", "heavy").
+  - Intensity levels:
+    - "light": Minimal transforms (color jitter, small rotations)
+    - "moderate": Balanced geometric + photometric transforms
+    - "heavy": More aggressive (but still medically plausible)
+  - Always preserve marker geometry regardless of intensity level.
+  - If you adjust these pipelines, keep them medically plausible and
+    do not over-complicate training.
+
+====================================================
+5. TRAINING & EVALUATION RULES
+====================================================
+
+- Training-related code lives mainly in `training_engine.py`.
+- When extending training:
+  - Reuse and improve existing utilities (`train_one_epoch`,
+    `validate_one_epoch`, `evaluate_metrics`, etc.) instead of creating
+    completely separate versions.
+  - Maintain logging of:
+    - Training/validation loss,
+    - COCO-style metrics (bbox_AP50, segm_AP50, combined_AP50),
+    - Any custom stats (e.g., number of predictions above thresholds).
+  - If you add new metrics (e.g., per-class AP for infection signs), do so
+    in a way that does not break the existing CLI.
+
+- Custom metrics to consider:
+  - Wound area accuracy (cm² vs ground truth)
+  - Infection detection accuracy (binary classification)
+  - Per-class segmentation metrics (AP50 for each tissue type)
+  - Marker detection rate (critical for area calculation)
+
+- Prefer reproducibility:
+  - Encourage setting random seeds.
+  - Avoid hidden global state or side effects that depend on the current
+    working directory.
+
+- Model checkpoints:
+  - Saved in `checkpoints/` or version-specific directories like
+    `notebooks/1.13.2025/checkpoints_fixed/`
+  - Format: PyTorch `.pth` files
+  - Include model state_dict, optimizer state, epoch number, best metrics
+  - When loading, ensure model architecture matches checkpoint
+
+====================================================
+6. INFERENCE & PREDICTION RULES
+====================================================
+
+- Prediction pipeline should:
+  - Load trained model checkpoint
+  - Process single image or batch
+  - Return wound area in cm² (using marker reference)
+  - Classify infection indicators (edema, hyperemia, necrosis, etc.)
+  - Output JSON format with structured results
+
+- When implementing inference:
+  - Use `model.eval()` and `torch.no_grad()`
+  - Handle cases where marker is not detected (fallback area calculation)
+  - Provide confidence scores for each detection
+  - Support visualization of predictions (masks, bboxes, labels)
+
+- Output format example:
+  ```json
+  {
+    "wound_area_cm2": 25.3,
+    "has_infection": true,
+    "infection_confidence": 0.87,
+    "findings": {
+      "edema": true,
+      "hyperemia": true,
+      "necrosis": false,
+      "granulation": true,
+      "fibrin": true
+    }
+  }
+  ```
+
+====================================================
+7. SAFETY & LIMITATIONS
+====================================================
+
+- Remember this is a RESEARCH / EDUCATIONAL project, not a clinical tool.
+- Do NOT claim that the model is ready for clinical deployment.
+- Be explicit in comments/docstrings when something is experimental,
+  approximate, or based on assumptions about the dataset.
+
+====================================================
+8. HOW TO RESPOND
+====================================================
+
+When the user asks for changes:
+
+- First, identify which version of the codebase they're working with:
+  - Check if they're in `notebooks/1.13.2025/` (latest) or another location
+  - Check which files are open or recently viewed
+  - Prefer modifying the latest version unless explicitly asked otherwise
+  - Remember: each subdirectory in `notebooks/` is an experimental iteration
+
+- Then think about how the change fits into:
+  - the data pipeline,
+  - the training engine,
+  - the inference/prediction pipeline,
+  - and the medical constraints above.
+
+- Consider backward compatibility:
+  - If modifying shared utilities (pipeline_utils.py, training_engine.py),
+    ensure changes don't break existing notebooks in the same version directory
+  - When possible, add new functions rather than modifying existing ones
+  - If a change affects multiple versions, clearly state which versions
+    are affected
+
+- Then propose the minimal, clean code that implements the request.
+- If a change might break an existing notebook or script, clearly warn the user
+  and suggest a backward-compatible alternative when possible.
+
+- When working with experimental versions:
+  - Respect that each version directory is a separate experiment
+  - Don't assume changes in one version should apply to others
+  - Ask for clarification if unsure which version to modify

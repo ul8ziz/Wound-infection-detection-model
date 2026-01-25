@@ -53,16 +53,31 @@ except ImportError:
     HAS_COCO = False
     mask_util = None
 
-# Fix encoding for Windows
+# Fix encoding for Windows (only if not in Jupyter/IPython)
 if sys.platform == 'win32':
+    # Check if running in Jupyter/IPython
     try:
-        sys.stdout.reconfigure(encoding='utf-8')
-        sys.stderr.reconfigure(encoding='utf-8')
-    except AttributeError:
-        # Python < 3.7
-        import io
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+        from IPython import get_ipython
+        in_jupyter = get_ipython() is not None
+    except ImportError:
+        in_jupyter = False
+    
+    # Only reconfigure if not in Jupyter (Jupyter handles encoding automatically)
+    if not in_jupyter:
+        try:
+            # Check if stdout has reconfigure method (Python 3.7+)
+            if hasattr(sys.stdout, 'reconfigure'):
+                sys.stdout.reconfigure(encoding='utf-8')
+                sys.stderr.reconfigure(encoding='utf-8')
+            elif hasattr(sys.stdout, 'buffer'):
+                # Python < 3.7 or TextIOWrapper
+                import io
+                sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+                sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+        except (AttributeError, OSError):
+            # If reconfiguration fails, continue without it
+            # Jupyter/IPython will handle encoding
+            pass
 
 # Add current directory to path for imports
 current_dir = Path(__file__).parent
