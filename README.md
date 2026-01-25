@@ -2,6 +2,15 @@
 
 **كشف علامات العدوى في الجروح الجراحية باستخدام Deep Learning**
 
+## ⚡ البيئة الموصى بها
+
+**⚠️ مهم:** هذا المشروع يستخدم بيئة `.venv_cuda` مع:
+- **Python 3.12.10**
+- **PyTorch 2.5.1+cu121** (مع دعم CUDA)
+- **CUDA 12.1**
+
+البيئة جاهزة للاستخدام مع GPU (NVIDIA GeForce RTX 4060 أو أفضل).
+
 ## ⭐ مشروع منظم مع سكريبتات Python و Jupyter Notebooks
 
 **`notebooks/train_model.py`** - سكريبت تدريب موحد شامل  
@@ -61,43 +70,76 @@ master_pro/
 
 ### 1. التثبيت
 
-#### 🐍 الطريقة الموصى بها: بيئة Python جديدة
+#### 🐍 الطريقة الموصى بها: بيئة Python مع دعم CUDA
+
+**⚠️ مهم:** هذا المشروع يستخدم بيئة `.venv_cuda` مع Python 3.12 و PyTorch مع دعم CUDA.
 
 **Windows:**
-```bash
-# إنشاء البيئة وتثبيت المكتبات
-setup_environment.bat
+```powershell
+# إنشاء البيئة مع Python 3.12 (إذا لم تكن موجودة)
+py -3.12 -m venv .venv_cuda
 
-# تشغيل Jupyter
-run_jupyter.bat
+# تفعيل البيئة
+.venv_cuda\Scripts\Activate.ps1
+
+# تثبيت PyTorch مع CUDA
+python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+
+# تثبيت باقي المكتبات
+python -m pip install -r requirements.txt
+
+# إعداد Jupyter Kernel
+python -m ipykernel install --user --name=venv_cuda --display-name="Python 3.12 (CUDA)"
 ```
 
 **Linux/Mac:**
 ```bash
-# إنشاء البيئة وتثبيت المكتبات
-chmod +x setup_environment.sh
-./setup_environment.sh
+# إنشاء البيئة مع Python 3.12
+python3.12 -m venv .venv_cuda
 
-# تشغيل Jupyter
-chmod +x run_jupyter.sh
-./run_jupyter.sh
+# تفعيل البيئة
+source .venv_cuda/bin/activate
+
+# تثبيت PyTorch مع CUDA
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+
+# تثبيت باقي المكتبات
+pip install -r requirements.txt
+
+# إعداد Jupyter Kernel
+python -m ipykernel install --user --name=venv_cuda --display-name="Python 3.12 (CUDA)"
 ```
 
-> **💡 الأفضل:** استخدم بيئة Python منفصلة لكل مشروع
+> **💡 الأفضل:** استخدم بيئة Python منفصلة لكل مشروع مع دعم CUDA
 
-#### 📝 الطريقة اليدوية
+#### 📝 التحقق من CUDA
+
+بعد التثبيت، تحقق من أن CUDA يعمل:
+```python
+import torch
+print(f"CUDA available: {torch.cuda.is_available()}")
+print(f"GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'N/A'}")
+```
+
+**النتيجة المتوقعة:**
+```
+CUDA available: True
+GPU: NVIDIA GeForce RTX 4060 Laptop GPU
+```
+
+#### 📝 الطريقة اليدوية (Anaconda)
 
 إذا كنت تستخدم Anaconda:
 ```bash
-# 1. PyTorch (مع CUDA 11.8)
-conda install pytorch torchvision torchaudio pytorch-cuda=11.8 -c pytorch -c nvidia -y
+# 1. PyTorch (مع CUDA 12.1)
+conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia -y
 
 # 2. المكتبات الأخرى
 conda install opencv numpy pandas matplotlib seaborn -y
 pip install -r requirements.txt
 ```
 
-> **💡 نصيحة:** الأفضل استخدام بيئة Python منفصلة (setup_environment.bat)
+> **💡 نصيحة:** الأفضل استخدام بيئة `.venv_cuda` مع Python 3.12
 
 ### 2. طريقة الاستخدام
 
@@ -117,20 +159,25 @@ python notebooks/train_model.py
 
 #### الطريقة 2: Jupyter Notebook
 
-**إذا استخدمت البيئة الافتراضية:**
-```bash
-# Windows
-run_jupyter.bat
+**الطريقة الموصى بها:**
+```powershell
+# تفعيل البيئة
+.venv_cuda\Scripts\Activate.ps1
 
-# Linux/Mac
-./run_jupyter.sh
+# تشغيل Jupyter
+jupyter notebook notebooks/training_pipeline.ipynb
 ```
+
+**⚠️ مهم:** في Jupyter Notebook:
+1. افتح `training_pipeline.ipynb`
+2. اختر **Kernel → Change Kernel → Python 3.12 (CUDA)**
+3. شغّل الخلايا - سيتم استخدام GPU تلقائياً
 
 **أو يدوياً:**
 ```bash
 # تفعيل البيئة أولاً
-# Windows: venv\Scripts\activate
-# Linux/Mac: source venv/bin/activate
+# Windows: .venv_cuda\Scripts\activate
+# Linux/Mac: source .venv_cuda/bin/activate
 
 jupyter notebook notebooks/training_pipeline.ipynb
 ```
@@ -313,23 +360,43 @@ CONFIG['epochs'] = 10  # بدلاً من 50
 
 ## 📈 النتائج المتوقعة
 
-مع GPU قوي (RTX 3090):
-- ⏱️ **التدريب**: 4-6 ساعات (50 epochs)
+مع GPU (RTX 4060 أو أفضل):
+- ⏱️ **التدريب**: 4-6 ساعات (50 epochs) على GPU
+- ⏱️ **التدريب على CPU**: 20-30 ساعة (50 epochs) - **غير موصى به**
 - 🎯 **mAP**: ~70-80%
 - 🔍 **Infection Detection**: ~85%
+
+**⚠️ مهم:** استخدم البيئة `.venv_cuda` للاستفادة من GPU وتقليل وقت التدريب بشكل كبير!
 
 ---
 
 ## 🆘 استكشاف الأخطاء
+
+### ❌ CUDA غير متاح / PyTorch CPU-only
+
+**المشكلة:** PyTorch مثبت بدون دعم CUDA
+
+**الحل:**
+1. تأكد من استخدام البيئة `.venv_cuda` (Python 3.12)
+2. أعد تثبيت PyTorch مع CUDA:
+   ```powershell
+   .venv_cuda\Scripts\Activate.ps1
+   pip uninstall torch torchvision -y
+   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+   ```
+3. تحقق من CUDA:
+   ```python
+   import torch
+   print(torch.cuda.is_available())  # يجب أن يطبع True
+   ```
 
 ### ❌ ERROR: Unknown compiler / Preparing metadata failed
 
 **المشكلة:** numpy يحاول البناء من المصدر (يتطلب Visual Studio)
 
 **الحل:**
-1. تم تحديث `requirements.txt` لاستخدام numpy 1.24.3 (wheel جاهز)
-2. شغّل: `install_prebuilt.bat` (يستخدم wheels جاهزة فقط)
-3. أو شغّل `setup_environment.bat` مرة أخرى
+1. استخدم البيئة `.venv_cuda` (Python 3.12) - تحتوي على wheels جاهزة
+2. أو شغّل: `pip install --only-binary :all: numpy scipy`
 
 ### ❌ ERROR: Could not install packages - WinError 32
 
@@ -338,8 +405,8 @@ CONFIG['epochs'] = 10  # بدلاً من 50
 **الحل:**
 1. **أغلق Jupyter Notebook** إذا كان مفتوحاً
 2. **أغلق جميع نوافذ Terminal**
-3. شغّل: `fix_pip_error.bat` (يغلق Python تلقائياً)
-4. أو شغّل `setup_environment.bat` مرة أخرى
+3. أعد المحاولة بعد إغلاق جميع العمليات
+4. أو استخدم: `taskkill /F /IM python.exe` ثم أعد المحاولة
 
 ### ❌ ValueError: numpy.dtype size changed
 
@@ -395,14 +462,24 @@ CONFIG['epochs'] = 10  # بدلاً من 50
 **ابدأ الآن!** 🚀
 
 **الطريقة السريعة (سكريبت Python):**
-```bash
+```powershell
+# تفعيل البيئة
+.venv_cuda\Scripts\Activate.ps1
+
+# تشغيل التدريب
 cd notebooks
 python train_model.py
 ```
 
 **أو باستخدام Jupyter Notebook:**
-```bash
+```powershell
+# تفعيل البيئة
+.venv_cuda\Scripts\Activate.ps1
+
+# تشغيل Jupyter
 jupyter notebook notebooks/training_pipeline.ipynb
+
+# ⚠️ مهم: اختر Kernel → Change Kernel → Python 3.12 (CUDA)
 ```
 
 ---
