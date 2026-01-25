@@ -2,112 +2,112 @@
   "images": [
     {
       "id": 41,
-      "file_name": "task_23\\data\\IMG_20240619_095149.jpg",
+      "file_name": "task_23/data/task_23_image_002.jpg",
       "width": 3072,
       "height": 4080,
       "infection_status": true
     },
     {
       "id": 94,
-      "file_name": "task_74\\data\\IMG_20241202_103830.jpg",
+      "file_name": "task_74/data/task_74_image_001.jpg",
       "width": 3072,
       "height": 4080,
       "infection_status": true
     },
     {
       "id": 5,
-      "file_name": "task_102\\data\\+1747636396339.jpg",
+      "file_name": "task_102/data/task_102_image_001.jpg",
       "width": 4080,
       "height": 3072,
       "infection_status": true
     },
     {
       "id": 77,
-      "file_name": "task_53\\data\\IMG_20241118_103013.jpg",
+      "file_name": "task_53/data/task_53_image_001.jpg",
       "width": 4080,
       "height": 3072,
       "infection_status": true
     },
     {
       "id": 82,
-      "file_name": "task_58\\data\\IMG_20241125_103009_1.jpg",
+      "file_name": "task_58/data/task_58_image_001.jpg",
       "width": 3072,
       "height": 4080,
       "infection_status": true
     },
     {
       "id": 18,
-      "file_name": "task_166\\data\\+1750320753614.jpg",
+      "file_name": "task_166/data/task_166_image_002.jpg",
       "width": 3072,
       "height": 4080,
       "infection_status": true
     },
     {
       "id": 21,
-      "file_name": "task_173\\data\\+1750680163175.jpg",
+      "file_name": "task_173/data/task_173_image_001.jpg",
       "width": 4080,
       "height": 3072,
       "infection_status": true
     },
     {
       "id": 80,
-      "file_name": "task_56\\data\\IMG_20241125_102750.jpg",
+      "file_name": "task_56/data/task_56_image_001.jpg",
       "width": 3072,
       "height": 4080,
       "infection_status": true
     },
     {
       "id": 40,
-      "file_name": "task_22\\data\\IMG_20240530_094237.jpg",
+      "file_name": "task_22/data/task_22_image_001.jpg",
       "width": 3072,
       "height": 4080,
       "infection_status": true
     },
     {
       "id": 19,
-      "file_name": "task_166\\data\\+1750320753579.jpg",
+      "file_name": "task_166/data/task_166_image_001.jpg",
       "width": 3072,
       "height": 4080,
       "infection_status": true
     },
     {
       "id": 54,
-      "file_name": "task_31\\data\\1741099051621.jpg",
+      "file_name": "task_31/data/task_31_image_001.jpg",
       "width": 4080,
       "height": 3072,
       "infection_status": true
     },
     {
       "id": 59,
-      "file_name": "task_36\\data\\1741679544521.jpg",
+      "file_name": "task_36/data/task_36_image_001.jpg",
       "width": 3072,
       "height": 4080,
       "infection_status": true
     },
     {
       "id": 112,
-      "file_name": "task_99\\data\\1747636396580.jpg",
+      "file_name": "task_99/data/task_99_image_001.jpg",
       "width": 3072,
       "height": 4080,
       "infection_status": true
     },
     {
       "id": 35,
-      "file_name": "task_21\\data\\IMG_20240624_092406.jpg",
+      "file_name": "task_21/data/task_21_image_004.jpg",
       "width": 3072,
       "height": 4080,
       "infection_status": true
     },
     {
       "id": 97,
-      "file_name": "task_77\\data\\1742463132256.jpg",
+      "file_name": "task_77/data/task_77_image_001.jpg",
       "width": 4080,
       "height": 3072,
       "infection_status": true
     },
     {
       "id": 42,
-      "file_name": "task_23\\data\\IMG_20240703_104054.jpg",
+      "file_name": "task_23/data/task_23_image_004.jpg",
       "width": 4080,
       "height": 3072,
       "infection_status": true
@@ -163956,67 +163956,67 @@
   "categories": [
     {
       "id": 0,
-      "name": "\u0412\u0441\u044f\u0420\u0430\u043d\u0430"
+      "name": "ВсяРана"
     },
     {
       "id": 1,
-      "name": "\u0424\u0438\u0431\u0440\u0438\u043d"
+      "name": "Фибрин"
     },
     {
       "id": 2,
-      "name": "\u041c\u0435\u0442\u0430\u043b\u043b\u043e\u043a\u043e\u043d\u0441\u0442\u0440\u0443\u043a\u0446\u0438\u044f"
+      "name": "Металлоконструкция"
     },
     {
       "id": 3,
-      "name": "\u0417\u043e\u043d\u0430 \u0448\u0432\u0430"
+      "name": "Зона шва"
     },
     {
       "id": 4,
-      "name": "\u0417\u043e\u043d\u0430 \u043e\u0442\u0435\u043a\u0430 \u0432\u043e\u043a\u0440\u0443\u0433 \u0440\u0430\u043d\u044b"
+      "name": "Зона отека вокруг раны"
     },
     {
       "id": 5,
-      "name": "\u0417\u043e\u043d\u0430 \u0433\u0438\u043f\u0435\u0440\u0435\u043c\u0438\u0438 \u0432\u043e\u043a\u0440\u0443\u0433"
+      "name": "Зона гиперемии вокруг"
     },
     {
       "id": 6,
-      "name": "\u0417\u043e\u043d\u0430 \u043d\u0435\u043a\u0440\u043e\u0437\u0430"
+      "name": "Зона некроза"
     },
     {
       "id": 7,
-      "name": "\u0417\u043e\u043d\u0430 \u0433\u0440\u0430\u043d\u0443\u043b\u044f\u0446\u0438\u0439"
+      "name": "Зона грануляций"
     },
     {
       "id": 8,
-      "name": "\u041c\u0435\u0442\u043a\u0430 \u0434\u043b\u044f \u0440\u0430\u0437\u043c\u0435\u0440\u043d\u043e\u0441\u0442\u0438"
+      "name": "Метка для размерности"
     },
     {
       "id": 9,
-      "name": "\u0412\u0442\u043e\u0440\u0438\u0447\u043d\u0430\u044f \u043f\u0438\u0433\u043c\u0435\u043d\u0442\u0430\u0446\u0438\u044f"
+      "name": "Вторичная пигментация"
     },
     {
       "id": 10,
-      "name": "\u041f\u043e\u0434\u043a\u043e\u0436\u043d\u0430\u044f \u0436\u0438\u0440.\u043a\u043b. \u0431\u0435\u0437 \u0433\u0440\u0430\u043d\u0443\u043b\u044f\u0446\u0438\u0439"
+      "name": "Подкожная жир.кл. без грануляций"
     },
     {
       "id": 11,
-      "name": "\u0424\u0430\u0441\u0446\u0438\u044f \u0431\u0435\u0437 \u0433\u0440\u0430\u043d\u0443\u043b\u044f\u0446\u0438\u0439"
+      "name": "Фасция без грануляций"
     },
     {
       "id": 12,
-      "name": "\u0413\u0443\u0431\u043a\u0430 \u0412\u0410\u041a"
+      "name": "Губка ВАК"
     },
     {
       "id": 13,
-      "name": "\u0413\u043b\u0443\u0431\u0438\u043d\u044b \u0440\u0430\u043d\u044b"
+      "name": "Глубины раны"
     },
     {
       "id": 14,
-      "name": "\u0421\u0443\u0445\u043e\u0436\u0438\u043b\u0438\u0435"
+      "name": "Сухожилие"
     },
     {
       "id": 15,
-      "name": "\u0413\u043d\u043e\u0439\u043d\u043e\u0435 \u043e\u0442\u0434\u0435\u043b\u044f\u0435\u043c\u043e\u0435"
+      "name": "Гнойное отделяемое"
     }
   ]
 }
