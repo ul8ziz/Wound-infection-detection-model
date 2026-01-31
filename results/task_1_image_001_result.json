@@ -1,0 +1,14 @@
+{
+  "image_path": "data/task_1/data/task_1_image_001.jpg",
+  "num_detections": 0,
+  "wound_area_cm2": null,
+  "has_infection": false,
+  "infection_confidence": 0.0,
+  "findings": {
+    "edema": false,
+    "hyperemia": false,
+    "necrosis": false,
+    "granulation": false,
+    "fibrin": false
+  }
+}

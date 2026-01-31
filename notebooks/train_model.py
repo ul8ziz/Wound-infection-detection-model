@@ -139,6 +139,34 @@ def build_model(num_classes: int, hidden_layer: int = 256, pretrained_backbone: 
 # Training Functions
 # ============================================================================
 
+def _is_valid_target(target: Dict) -> bool:
+    boxes = target.get("boxes")
+    if boxes is None or boxes.numel() == 0:
+        return False
+    if boxes.ndim != 2 or boxes.shape[1] != 4:
+        return False
+    if (boxes[:, 2] <= boxes[:, 0]).any() or (boxes[:, 3] <= boxes[:, 1]).any():
+        return False
+    masks = target.get("masks")
+    if masks is not None:
+        if masks.numel() == 0 or masks.sum().item() <= 0:
+            return False
+    return True
+
+
+def _filter_valid_batch(
+    images: List[torch.Tensor],
+    targets: List[Dict],
+) -> Tuple[List[torch.Tensor], List[Dict]]:
+    valid_images = []
+    valid_targets = []
+    for image, target in zip(images, targets):
+        if _is_valid_target(target):
+            valid_images.append(image)
+            valid_targets.append(target)
+    return valid_images, valid_targets
+
+
 def train_one_epoch(
     model: nn.Module, 
     optimizer: torch.optim.Optimizer, 
@@ -149,7 +177,10 @@ def train_one_epoch(
     scaler: Optional[torch.cuda.amp.GradScaler] = None,
     scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
     scheduler_step_per_iter: bool = False,
-    max_norm: float = 1.0
+    max_norm: float = 1.0,
+    loss_clip_max: Optional[float] = None,
+    loss_skip_threshold: Optional[float] = None,
+    skip_invalid_targets: bool = True
 ) -> Dict[str, float]:
     """
     Trains the model for one epoch.
@@ -164,10 +195,19 @@ def train_one_epoch(
     
     total_loss_accum = 0.0
     num_batches = len(data_loader)
+    valid_batches = 0
+    skipped_batches = 0
     
     for i, (images, targets) in enumerate(data_loader):
         images = list(image.to(device) for image in images)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+        if skip_invalid_targets:
+            images, targets = _filter_valid_batch(images, targets)
+            if len(images) == 0:
+                skipped_batches += 1
+                if i % print_freq == 0:
+                    print(f"{header} [{i}/{num_batches}] Skipping batch with invalid targets")
+                continue
 
         # Optimizer zero_grad
         optimizer.zero_grad(set_to_none=True)
@@ -184,8 +224,16 @@ def train_one_epoch(
         loss_value = losses.item()
 
         if not math.isfinite(loss_value):
-            print(f"Loss is {loss_value}, stopping training")
-            sys.exit(1)
+            print(f"Loss is {loss_value}, skipping batch")
+            skipped_batches += 1
+            continue
+        if loss_skip_threshold is not None and loss_value > loss_skip_threshold:
+            print(f"⚠️  High loss spike ({loss_value:.2f}), skipping batch")
+            skipped_batches += 1
+            continue
+        if loss_clip_max is not None:
+            losses = torch.clamp(losses, max=loss_clip_max)
+            loss_value = losses.item()
 
         # Backward pass
         if scaler is not None:
@@ -207,6 +255,7 @@ def train_one_epoch(
 
         # Update logs
         total_loss_accum += loss_value
+        valid_batches += 1
         for k, v in loss_dict.items():
             if k not in metric_logger:
                 metric_logger[k] = 0.0
@@ -216,9 +265,10 @@ def train_one_epoch(
             print(f"{header} [{i}/{num_batches}] Loss: {loss_value:.4f}")
 
     # Average losses
-    avg_loss = total_loss_accum / num_batches
-    avg_components = {k: v / num_batches for k, v in metric_logger.items()}
+    avg_loss = total_loss_accum / max(1, valid_batches)
+    avg_components = {k: v / max(1, valid_batches) for k, v in metric_logger.items()}
     avg_components['total_loss'] = avg_loss
+    avg_components['skipped_batches'] = skipped_batches
     
     return avg_components
 
@@ -227,7 +277,10 @@ def validate_one_epoch(
     model: nn.Module, 
     data_loader: torch.utils.data.DataLoader, 
     device: torch.device,
-    track_predictions: bool = False
+    track_predictions: bool = False,
+    loss_clip_max: Optional[float] = None,
+    loss_skip_threshold: Optional[float] = None,
+    skip_invalid_targets: bool = True
 ) -> Dict[str, float]:
     """
     Computes validation LOSS (not metrics).
@@ -246,6 +299,8 @@ def validate_one_epoch(
     total_loss_accum = 0.0
     metric_logger = {}
     num_batches = len(data_loader)
+    valid_batches = 0
+    skipped_batches = 0
     
     # Track prediction scores if requested
     all_scores = []
@@ -254,12 +309,27 @@ def validate_one_epoch(
     for images, targets in data_loader:
         images = list(image.to(device) for image in images)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+        if skip_invalid_targets:
+            images, targets = _filter_valid_batch(images, targets)
+            if len(images) == 0:
+                skipped_batches += 1
+                continue
 
         loss_dict = model(images, targets)
         losses = sum(loss for loss in loss_dict.values())
 
         loss_value = losses.item()
+        if not math.isfinite(loss_value):
+            skipped_batches += 1
+            continue
+        if loss_skip_threshold is not None and loss_value > loss_skip_threshold:
+            skipped_batches += 1
+            continue
+        if loss_clip_max is not None:
+            losses = torch.clamp(losses, max=loss_clip_max)
+            loss_value = losses.item()
         total_loss_accum += loss_value
+        valid_batches += 1
         
         for k, v in loss_dict.items():
             if k not in metric_logger:
@@ -278,9 +348,10 @@ def validate_one_epoch(
                         predictions_per_thresh[thresh] += np.sum(scores >= thresh)
             model.train()
 
-    avg_loss = total_loss_accum / max(1, num_batches)
-    avg_components = {k: v / max(1, num_batches) for k, v in metric_logger.items()}
+    avg_loss = total_loss_accum / max(1, valid_batches)
+    avg_components = {k: v / max(1, valid_batches) for k, v in metric_logger.items()}
     avg_components['total_loss'] = avg_loss
+    avg_components['skipped_batches'] = skipped_batches
     
     if track_predictions and len(all_scores) > 0:
         avg_components['pred_mean_score'] = float(np.mean(all_scores))
@@ -516,30 +587,32 @@ def evaluate_metrics(
 # ============================================================================
 
 def save_checkpoint(
-    state: Dict, 
-    output_dir: str, 
-    filename: str = "last.pt", 
+    state: Dict,
+    output_dir: str,
+    filename: str = "last.pt",
     is_best: bool = False,
     best_metric_name: str = "metric",
-    current_metric: float = 0.0
+    current_metric: float = 0.0,
+    best_filename: str = "best_model.pth"
 ):
     """
-    Saves checkpoint. Always saves as 'last.pt', and also as 'best.pt' if is_best=True.
+    Saves checkpoint. Always saves as 'last.pt', and also as 'best_model.pth' if is_best=True.
     
     Args:
         state: Dictionary containing model state, optimizer, scheduler, epoch, best_metric, etc.
         output_dir: Directory to save checkpoints
         filename: Filename for the checkpoint (default: "last.pt")
-        is_best: If True, also save as "best.pt"
+        is_best: If True, also save as "best_model.pth"
         best_metric_name: Name of the metric being tracked
         current_metric: Current metric value
+        best_filename: Filename for the best checkpoint
     """
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     save_path = os.path.join(output_dir, filename)
     torch.save(state, save_path)
     
     if is_best:
-        best_path = os.path.join(output_dir, "best.pt")
+        best_path = os.path.join(output_dir, best_filename)
         torch.save(state, best_path)
         epoch = state.get('epoch', 'unknown')
         best_metric = state.get('best_metric', 'unknown')
@@ -847,6 +920,15 @@ CONFIG = {
     "epochs": 50,
     "lr": 0.005,
     "image_size": (512, 512),
+
+    # Early stopping
+    "early_stop_patience": 7,
+    "early_stop_min_delta": 0.001,
+
+    # Training stability
+    "loss_clip_max": 100.0,
+    "loss_skip_threshold": 1000.0,
+    "skip_invalid_targets": True,
     
     # Medical Augmentation Strategy Settings
     "use_medical_augmentation": True,  # Enable comprehensive medical augmentation
@@ -982,8 +1064,9 @@ def main():
         "train_losses": [],
         "val_losses": [],
         "metrics_per_epoch": [],
-        "best_metric": -1.0,
+        "best_metric": float("inf"),
         "best_epoch": 0,
+        "best_metric_name": "val_loss",
         "training_start": datetime.now().isoformat(),
         "training_time": None,
         "device": str(device),
@@ -1003,9 +1086,12 @@ def main():
     print()
     
     start_time = time.time()
-    best_metric = -1.0
+    best_val_loss = float("inf")
     best_epoch = 0
-    best_metric_name = "combined_AP50"
+    best_metric_name = "val_loss"
+    early_stop_patience = CONFIG.get("early_stop_patience", 0)
+    early_stop_min_delta = CONFIG.get("early_stop_min_delta", 0.0)
+    epochs_without_improve = 0
     
     try:
         for epoch in range(CONFIG["epochs"]):
@@ -1016,14 +1102,28 @@ def main():
             
             # Train
             train_stats = train_one_epoch(
-                model, optimizer, train_loader, device, epoch,
+                model,
+                optimizer,
+                train_loader,
+                device,
+                epoch,
                 scheduler=lr_scheduler,
-                scheduler_step_per_iter=False
+                scheduler_step_per_iter=False,
+                loss_clip_max=CONFIG.get("loss_clip_max"),
+                loss_skip_threshold=CONFIG.get("loss_skip_threshold"),
+                skip_invalid_targets=CONFIG.get("skip_invalid_targets", True)
             )
             results["train_losses"].append(train_stats["total_loss"])
             
             # Validate
-            val_stats = validate_one_epoch(model, val_loader, device)
+            val_stats = validate_one_epoch(
+                model,
+                val_loader,
+                device,
+                loss_clip_max=CONFIG.get("loss_clip_max"),
+                loss_skip_threshold=CONFIG.get("loss_skip_threshold"),
+                skip_invalid_targets=CONFIG.get("skip_invalid_targets", True)
+            )
             results["val_losses"].append(val_stats["total_loss"])
             
             # Evaluate metrics
@@ -1031,27 +1131,25 @@ def main():
             metrics = evaluate_metrics(model, val_loader, device)
             results["metrics_per_epoch"].append(metrics)
             
-            # Determine best metric
-            current_metric = metrics.get(
-                "combined_AP50", 
-                metrics.get("bbox_AP50", metrics.get("f1", 0.0))
-            )
+            current_metric = val_stats["total_loss"]
             
             # Print epoch summary
             print(f"Train Loss: {train_stats['total_loss']:.4f} | Val Loss: {val_stats['total_loss']:.4f}")
             print(f"Current {best_metric_name}: {current_metric:.4f}")
             
             # Save checkpoints
-            is_best = current_metric > best_metric
+            is_best = current_metric < (best_val_loss - early_stop_min_delta)
             if is_best:
-                best_metric = current_metric
+                best_val_loss = current_metric
                 best_epoch = epoch + 1
-                results["best_metric"] = best_metric
+                results["best_metric"] = best_val_loss
                 results["best_epoch"] = best_epoch
-                print(f"✓ NEW BEST! {best_metric_name}: {best_metric:.4f} (Epoch {best_epoch})")
+                epochs_without_improve = 0
+                print(f"✓ NEW BEST! {best_metric_name}: {best_val_loss:.4f} (Epoch {best_epoch})")
             else:
-                gap = best_metric - current_metric
-                print(f"  (Best: {best_metric:.4f}, Gap: {gap:.4f})")
+                epochs_without_improve += 1
+                gap = current_metric - best_val_loss
+                print(f"  (Best: {best_val_loss:.4f}, Gap: {gap:.4f})")
             
             # Save checkpoints
             save_checkpoint(
@@ -1060,36 +1158,22 @@ def main():
                     "optimizer": optimizer.state_dict(),
                     "scheduler": lr_scheduler.state_dict(),
                     "epoch": epoch + 1,
-                    "best_metric": best_metric,
+                    "best_metric": best_val_loss,
                     "best_metric_name": best_metric_name,
                     "current_metric": current_metric,
                     "config": str(CONFIG)
                 },
                 str(output_dir),
                 filename="last.pt",
-                is_best=False,
+                is_best=is_best,
                 best_metric_name=best_metric_name,
-                current_metric=current_metric
+                current_metric=current_metric,
+                best_filename="best_model.pth"
             )
-            
-            if is_best:
-                save_checkpoint(
-                    {
-                        "model": model.state_dict(),
-                        "optimizer": optimizer.state_dict(),
-                        "scheduler": lr_scheduler.state_dict(),
-                        "epoch": epoch + 1,
-                        "best_metric": best_metric,
-                        "best_metric_name": best_metric_name,
-                        "current_metric": current_metric,
-                        "config": str(CONFIG)
-                    },
-                    str(output_dir),
-                    filename="best.pt",
-                    is_best=True,
-                    best_metric_name=best_metric_name,
-                    current_metric=current_metric
-                )
+
+            if early_stop_patience > 0 and epochs_without_improve >= early_stop_patience:
+                print(f"Early stopping triggered after {epochs_without_improve} epochs without improvement.")
+                break
             
             epoch_time = time.time() - epoch_start
             print(f"Epoch time: {epoch_time:.2f}s")
@@ -1166,12 +1250,12 @@ def main():
     print("Training Summary")
     print("=" * 80)
     print(f"Total training time: {results['training_time']:.2f} seconds ({results['training_time']/60:.2f} minutes)")
-    print(f"Best {best_metric_name}: {best_metric:.4f} at epoch {best_epoch}")
+    print(f"Best {best_metric_name}: {results['best_metric']:.4f} at epoch {best_epoch}")
     print(f"Final train loss: {results['train_losses'][-1]:.4f}")
     print(f"Final val loss: {results['val_losses'][-1]:.4f}")
     print()
     print(f"Checkpoints saved to: {output_dir}")
-    print(f"  - best.pt (epoch {best_epoch})")
+    print(f"  - best_model.pth (epoch {best_epoch})")
     print(f"  - last.pt (epoch {CONFIG['epochs']})")
     print()
     print("=" * 80)
@@ -1210,7 +1294,8 @@ def generate_report(results: dict, output_file: Path):
     
     # Results
     report.append("## Results\n\n")
-    report.append(f"- **Best Metric**: {results['best_metric']:.4f}\n")
+    best_metric_name = results.get("best_metric_name", "metric")
+    report.append(f"- **Best Metric ({best_metric_name})**: {results['best_metric']:.4f}\n")
     report.append(f"- **Best Epoch**: {results['best_epoch']}\n")
     report.append(f"- **Training Time**: {results['training_time']:.2f} seconds ({results['training_time']/60:.2f} minutes)\n")
     report.append(f"- **Training Start**: {results['training_start']}\n")
@@ -1267,7 +1352,7 @@ def generate_report(results: dict, output_file: Path):
         report.append(f"- **Train Loss**: {initial_train_loss:.4f} -> {final_train_loss:.4f} ({train_improvement:+.2f}%)\n")
         report.append(f"- **Val Loss**: {initial_val_loss:.4f} -> {final_val_loss:.4f} ({val_improvement:+.2f}%)\n\n")
     
-    if results["metrics_per_epoch"]:
+    if results["metrics_per_epoch"] and results.get("best_metric_name") != "val_loss":
         first_metric = results["metrics_per_epoch"][0].get("combined_AP50", results["metrics_per_epoch"][0].get("bbox_AP50", 0.0))
         best_metric = results["best_metric"]
         if first_metric > 0:
@@ -1341,30 +1426,66 @@ def run_training_cli():
     optimizer = optim.SGD(params, lr=args.lr, momentum=0.9, weight_decay=0.0005)
     lr_scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
     
-    best_metric = 0.0
+    best_val_loss = float("inf")
+    early_stop_patience = 7
+    early_stop_min_delta = 0.001
+    epochs_without_improve = 0
     
     for epoch in range(args.epochs):
-        loss_dict = train_one_epoch(model, optimizer, train_loader, device, epoch)
-        val_loss_dict = validate_one_epoch(model, val_loader, device)
+        loss_dict = train_one_epoch(
+            model,
+            optimizer,
+            train_loader,
+            device,
+            epoch,
+            loss_clip_max=CONFIG.get("loss_clip_max"),
+            loss_skip_threshold=CONFIG.get("loss_skip_threshold"),
+            skip_invalid_targets=CONFIG.get("skip_invalid_targets", True)
+        )
+        val_loss_dict = validate_one_epoch(
+            model,
+            val_loader,
+            device,
+            loss_clip_max=CONFIG.get("loss_clip_max"),
+            loss_skip_threshold=CONFIG.get("loss_skip_threshold"),
+            skip_invalid_targets=CONFIG.get("skip_invalid_targets", True)
+        )
         
         print(f"Epoch {epoch} Val Loss: {val_loss_dict['total_loss']:.4f}")
         
         metrics = evaluate_metrics(model, val_loader, device)
         
-        current_metric = metrics.get("combined_AP50", metrics.get("bbox_AP50", metrics.get("f1", 0.0)))
-        is_best = current_metric > best_metric
+        current_metric = val_loss_dict["total_loss"]
+        is_best = current_metric < (best_val_loss - early_stop_min_delta)
         if is_best:
-            best_metric = current_metric
+            best_val_loss = current_metric
+            epochs_without_improve = 0
+        else:
+            epochs_without_improve += 1
             
-        save_checkpoint({
-            "model": model.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "scheduler": lr_scheduler.state_dict(),
-            "epoch": epoch,
-            "best_metric": best_metric
-        }, args.output_dir, "last.pt", is_best)
+        save_checkpoint(
+            {
+                "model": model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+                "scheduler": lr_scheduler.state_dict(),
+                "epoch": epoch,
+                "best_metric": best_val_loss,
+                "best_metric_name": "val_loss",
+                "current_metric": current_metric
+            },
+            args.output_dir,
+            "last.pt",
+            is_best,
+            best_metric_name="val_loss",
+            current_metric=current_metric,
+            best_filename="best_model.pth"
+        )
         
         lr_scheduler.step()
+
+        if early_stop_patience > 0 and epochs_without_improve >= early_stop_patience:
+            print(f"Early stopping triggered after {epochs_without_improve} epochs without improvement.")
+            break
 
 # ============================================================================
 # Entry Point
