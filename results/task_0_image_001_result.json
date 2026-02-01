@@ -1,6 +1,6 @@
 {
   "image_path": "data/task_0/data/task_0_image_001.jpg",
-  "num_detections": 0,
+  "num_detections": 1,
   "wound_area_cm2": null,
   "has_infection": false,
   "infection_confidence": 0.0,

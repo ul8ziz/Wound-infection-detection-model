@@ -147,10 +147,19 @@ def _is_valid_target(target: Dict) -> bool:
         return False
     if (boxes[:, 2] <= boxes[:, 0]).any() or (boxes[:, 3] <= boxes[:, 1]).any():
         return False
+    
+    # Check consistency
+    labels = target.get("labels")
+    if labels is not None and len(boxes) != len(labels):
+        return False
+        
     masks = target.get("masks")
     if masks is not None:
         if masks.numel() == 0 or masks.sum().item() <= 0:
             return False
+        if len(boxes) != len(masks):
+            return False
+            
     return True
 
 
@@ -205,8 +214,8 @@ def train_one_epoch(
             images, targets = _filter_valid_batch(images, targets)
             if len(images) == 0:
                 skipped_batches += 1
-                if i % print_freq == 0:
-                    print(f"{header} [{i}/{num_batches}] Skipping batch with invalid targets")
+                # if i % print_freq == 0:
+                #     print(f"{header} [{i}/{num_batches}] Skipping batch with invalid targets")
                 continue
 
         # Optimizer zero_grad
@@ -224,11 +233,11 @@ def train_one_epoch(
         loss_value = losses.item()
 
         if not math.isfinite(loss_value):
-            print(f"Loss is {loss_value}, skipping batch")
+            # print(f"Loss is {loss_value}, skipping batch")
             skipped_batches += 1
             continue
         if loss_skip_threshold is not None and loss_value > loss_skip_threshold:
-            print(f"⚠️  High loss spike ({loss_value:.2f}), skipping batch")
+            # print(f"⚠️  High loss spike ({loss_value:.2f}), skipping batch")
             skipped_batches += 1
             continue
         if loss_clip_max is not None:

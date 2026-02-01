@@ -18,6 +18,23 @@ except ImportError:
     HAS_COCO = False
     COCO = None
 
+
+# ============================================================================
+# TARGET CLASSES CONFIGURATION
+# ============================================================================
+# Only these classes will be used for training. All others will be ignored.
+TARGET_CLASSES_NAMES = [
+    "ВсяРана",                # 1. Whole Wound
+    "Метка для размерности",  # 2. Size Marker
+    "Зона отека вокруг раны", # 3. Edema
+    "Зона гиперемии вокруг",  # 4. Hyperemia
+    "Зона некроза",           # 5. Necrosis
+    "Зона грануляций",        # 6. Granulation
+    "Фибрин",                 # 7. Fibrin
+    "Гнойное отделяемое"      # 8. Pus
+]
+# ============================================================================
+
 def set_seed(seed: int = 42):
     """
     Sets the seed for reproducibility across random, numpy, and torch.
@@ -113,6 +130,32 @@ class WoundDataset(Dataset):
                 self.img_to_anns[img_id] = []
             self.img_to_anns[img_id].append(ann)
             
+        
+        # Build class mapping (Original ID -> New ID)
+        self.class_mapping = {}
+        self.num_classes = 1  # Start with background (0)
+        
+        # Get categories from COCO
+        cats = self.coco_json.get('categories', [])
+        
+        # Create mapping only for target classes
+        print(f"Filtering classes. Keeping only: {TARGET_CLASSES_NAMES}")
+        for cat in cats:
+            if cat['name'] in TARGET_CLASSES_NAMES:
+                # Assign new ID (1, 2, 3...)
+                # We want a consistent order, so let's use the order in TARGET_CLASSES_NAMES
+                try:
+                    new_id = TARGET_CLASSES_NAMES.index(cat['name']) + 1
+                    self.class_mapping[cat['id']] = new_id
+                    print(f"  - Class '{cat['name']}' (ID {cat['id']}) mapped to New ID {new_id}")
+                except ValueError:
+                    continue
+        
+        self.num_classes = len(TARGET_CLASSES_NAMES) + 1 # +1 for background
+        print(f"Total classes for training: {self.num_classes} (including background)")
+
+        self.ids = list(self.images.keys())
+
         self.ids = list(self.images.keys())
 
     def __len__(self) -> int:
@@ -168,19 +211,47 @@ class WoundDataset(Dataset):
             if w <= 0 or h <= 0:
                 continue
             
+            # Filter by target classes
+            original_cat_id = ann['category_id']
+            if original_cat_id not in self.class_mapping:
+                continue # Skip this annotation if it's not a target class
+            
             # Pass boxes in absolute pixel coordinates (COCO format: [x, y, w, h])
             # Albumentations with format='coco' expects pixel coordinates, NOT normalized
             boxes.append([x, y, w, h])
-            labels.append(ann['category_id'])
+            
+            new_label_id = self.class_mapping[original_cat_id]
+            labels.append(new_label_id)
+
             areas.append(ann['area'])
             iscrowd.append(ann.get('iscrowd', 0))
             
             # Create mask
             mask = np.zeros((img_h, img_w), dtype=np.uint8)
             for seg in ann['segmentation']:
-                poly = np.array(seg).reshape(-1, 2).astype(np.int32)
-                cv2.fillPoly(mask, [poly], 1)
+                try:
+                    poly = np.array(seg)
+                    if poly.size < 6: # Need at least 3 points (x,y)
+                        continue
+                    if poly.size % 2 != 0: # Must be pairs
+                        continue
+                    poly = poly.reshape(-1, 2).astype(np.int32)
+                    cv2.fillPoly(mask, [poly], 1)
+                except Exception as e:
+                    print(f"Warning: Invalid segmentation in image {img_id}: {e}")
+                    continue
             masks.append(mask)
+
+        # Verify integrity
+        if len(boxes) != len(labels) or len(boxes) != len(masks):
+            print(f"Warning: Mismatch in annotations for {img_id}: boxes={len(boxes)}, labels={len(labels)}, masks={len(masks)}")
+            # Truncate to the minimum length to avoid crashes
+            min_len = min(len(boxes), len(labels), len(masks))
+            boxes = boxes[:min_len]
+            labels = labels[:min_len]
+            masks = masks[:min_len]
+            areas = areas[:min_len]
+            iscrowd = iscrowd[:min_len]
 
         # Apply transforms
         if self.transforms:
