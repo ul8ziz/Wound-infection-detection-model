@@ -259,7 +259,8 @@ CONFIG = {
     "ann_file_train": "../data/splits/train.json",
     "ann_file_val": "../data/splits/val.json",
     
-    # Training settings
+    # Training settings (uses GPU/CUDA when available)
+    "device_prefer_cuda": True,
     "output_dir": "../checkpoints_medical_aug",
     "seed": 42,
     "batch_size": 4,

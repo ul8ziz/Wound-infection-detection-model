@@ -939,6 +939,9 @@ CONFIG = {
     "loss_skip_threshold": 1000.0,
     "skip_invalid_targets": True,
     
+    # Device: use GPU (CUDA) when available for faster training
+    "device_prefer_cuda": True,
+
     # Medical Augmentation Strategy Settings
     "use_medical_augmentation": True,  # Enable comprehensive medical augmentation
     "preserve_marker": True,           # Preserve marker geometry (critical for area measurements)
@@ -958,11 +961,16 @@ def main():
     print(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print()
     
-    # Setup
+    # Setup: use GPU (CUDA) for training when available
     set_seed(CONFIG["seed"])
     device = get_device(CONFIG.get("device_prefer_cuda", True))
-    print(f"Using device: {device}")
     print(f"PyTorch version: {torch.__version__}")
+    print(f"CUDA available: {torch.cuda.is_available()}")
+    if device.type == "cuda":
+        print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+    else:
+        print("Using device: CPU (GPU not available; install PyTorch with CUDA for GPU training)")
+    print(f"Device: {device}")
     print()
     
     # Resolve paths relative to script location
@@ -1401,8 +1409,14 @@ def run_training_cli():
         raise FileNotFoundError(f"Validation annotation file not found: {args.val_ann}")
     
     set_seed(args.seed)
-    device = get_device()
-    print(f"Using device: {device}")
+    # Prefer CUDA (GPU) for training
+    device = get_device(prefer_cuda=True)
+    print(f"CUDA available: {torch.cuda.is_available()}")
+    if device.type == "cuda":
+        print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+    else:
+        print("Using device: CPU (GPU not available)")
+    print(f"Device: {device}")
     
     # Create datasets
     train_dataset = create_dataset(args.data_root, args.train_ann, train=True)
