@@ -21,9 +21,9 @@
 ## 📁 هيكل المشروع
 
 ```
-master_pro/
+Wound-infection-detection-model/
 ├── data/                          # البيانات (241 task)
-│   ├── task_0/ ... task_240/     # البيانات الأصلية
+│   ├── task_0/ ... task_240/      # البيانات الأصلية
 │   ├── project.json
 │   ├── annotations.json           # جميع البيانات (COCO format)
 │   ├── splits/                    # تقسيمات البيانات
@@ -45,22 +45,17 @@ master_pro/
 │   └── augmentation_strategy.py   # استراتيجية augmentation
 │
 ├── docs/                           # التوثيق
-│   └── DATA_AUGMENTATION_GUIDE.md # دليل augmentation
+│   └── DATA_AUGMENTATION_GUIDE.md  # دليل augmentation
 │
-├── checkpoints/                    # النماذج المحفوظة
+├── checkpoints/                    # النماذج المحفوظة (يُنشأ عند التدريب)
 │   ├── best.pt                     # أفضل نموذج
 │   └── last.pt                     # آخر checkpoint
-├── checkpoints_medical_aug/        # نماذج مع augmentation
-├── checkpoints_advanced/           # نماذج متقدمة
+├── checkpoints_medical_aug/        # نماذج مع medical augmentation
 │
-├── results/                        # النتائج (بعد Part 8)
+├── results/                        # النتائج (بعد Inference)
 │   └── *_result.json
 │
 ├── requirements.txt                # المكتبات
-├── setup_environment.bat           # إنشاء البيئة (Windows)
-├── setup_environment.sh            # إنشاء البيئة (Linux/Mac)
-├── run_jupyter.bat                 # تشغيل Jupyter (Windows)
-├── run_jupyter.sh                  # تشغيل Jupyter (Linux/Mac)
 └── README.md                       # هذا الملف
 ```
 
@@ -145,7 +140,7 @@ pip install -r requirements.txt
 
 #### الطريقة 1: سكريبت Python (موصى به) 🚀
 
-**التدريب المباشر:**
+**التدريب المباشر (يستخدم GPU تلقائياً عند توفّر CUDA):**
 ```bash
 # من مجلد notebooks
 cd notebooks
@@ -285,6 +280,7 @@ CONFIG = {
     "batch_size": 4,
     "lr": 0.005,
     "image_size": (512, 512),
+    "device": "cuda" if torch.cuda.is_available() else "cpu",  # استخدام GPU عند التدريب
     "use_medical_augmentation": False,  # True للـ augmentation أثناء التدريب
 }
 ```
@@ -304,7 +300,9 @@ CONFIG = {
 - `checkpoints_medical_aug/best.pt` - أفضل نموذج
 - `checkpoints_medical_aug/last.pt` - آخر checkpoint
 - `checkpoints_medical_aug/training_results.json` - نتائج التدريب
-- `checkpoints_medical_aug/training_report.md` - تقرير شامل
+- `checkpoints_medical_aug/training_report.md` - تقرير شامل  
+
+(أو مجلد `checkpoints/` إذا غيّرت `output_dir` في CONFIG)
 
 ### بعد Inference:
 ```json
