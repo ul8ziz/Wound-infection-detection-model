@@ -913,16 +913,19 @@ def run_wound_inference(
 # ============================================================================
 # Configuration
 # ============================================================================
+# Run from experiments/maskrcnn/: data is at ../../data; outputs in ./checkpoints and ./results.
+EXPERIMENTS_ROOT = "."
+EXPERIMENT_NAME = "maskrcnn"
 
 CONFIG = {
-    # Data paths
-    "data_root": "../data",  # Original data root (data/ in project root)
-    "ann_file_train": "../data/splits/train.json",  # Training annotations
-    "ann_file_val": "../data/splits/val.json",  # Validation annotations
-    "ann_file_full": "../data/annotations.json",  # Full annotations
+    # Data paths (shared; project root)
+    "data_root": "../../data",  # From experiments/maskrcnn/ -> project data/
+    "ann_file_train": "../../data/splits/train.json",
+    "ann_file_val": "../../data/splits/val.json",
+    "ann_file_full": "../../data/annotations.json",
     
     # Training settings
-    "output_dir": "../checkpoints_medical_aug",  # Checkpoints in project root
+    "output_dir": "checkpoints",  # This folder (experiments/maskrcnn/checkpoints)
     "seed": 42,
     "batch_size": 4,
     "num_workers": 0,  # Set to 0 for Windows compatibility
@@ -1383,6 +1386,92 @@ def generate_report(results: dict, output_file: Path):
     with open(output_file, 'w', encoding='utf-8') as f:
         f.writelines(report)
 
+
+# ============================================================================
+# Review Training Results (Option C)
+# ============================================================================
+
+def review_training_results(
+    path: Union[str, Path],
+    plot: bool = True,
+    verbose: bool = True
+) -> Dict:
+    """
+    Load training_results.json and print summary; optionally plot loss and metrics.
+
+    Args:
+        path: Path to training_results.json file, or to directory containing it (e.g. checkpoints_dir).
+        plot: If True, show loss (and metrics) curves using matplotlib.
+        verbose: If True, print summary to stdout.
+
+    Returns:
+        The loaded results dictionary.
+    """
+    path = Path(path)
+    if path.is_dir():
+        path = path / "training_results.json"
+    if not path.exists():
+        raise FileNotFoundError(f"Training results not found: {path}")
+
+    with open(path, 'r', encoding='utf-8') as f:
+        results = json.load(f)
+
+    if verbose:
+        print("=" * 60)
+        print("Training Results Summary")
+        print("=" * 60)
+        print(f"Best metric ({results.get('best_metric_name', 'val_loss')}): {results.get('best_metric', 0):.4f}")
+        print(f"Best epoch: {results.get('best_epoch', 0)}")
+        print(f"Training time: {results.get('training_time', 0):.2f}s ({results.get('training_time', 0) / 60:.2f} min)")
+        print(f"Device: {results.get('device', 'unknown')}")
+        if results.get('train_losses'):
+            print(f"Final train loss: {results['train_losses'][-1]:.4f}")
+            print(f"Final val loss: {results['val_losses'][-1]:.4f}")
+        if results.get('final_metrics'):
+            print("Final metrics:")
+            for k, v in results['final_metrics'].items():
+                if isinstance(v, (int, float)):
+                    print(f"  {k}: {v:.4f}")
+                else:
+                    print(f"  {k}: {v}")
+        print("=" * 60)
+
+    if plot and results.get('train_losses'):
+        try:
+            import matplotlib.pyplot as plt
+            n_epochs = len(results['train_losses'])
+            epochs_range = range(1, n_epochs + 1)
+            n_plots = 2 if results.get('metrics_per_epoch') and results['metrics_per_epoch'] else 1
+            fig, axes = plt.subplots(1, n_plots, figsize=(6 * n_plots, 4))
+            if n_plots == 1:
+                axes = [axes]
+            axes[0].plot(epochs_range, results['train_losses'], label='Train Loss', marker='o', markersize=2)
+            axes[0].plot(epochs_range, results['val_losses'], label='Val Loss', marker='s', markersize=2)
+            axes[0].set_xlabel('Epoch')
+            axes[0].set_ylabel('Loss')
+            axes[0].set_title('Train vs Validation Loss')
+            axes[0].legend()
+            axes[0].grid(True, alpha=0.3)
+            if n_plots == 2 and results.get('metrics_per_epoch') and len(results['metrics_per_epoch']) == n_epochs:
+                first = results['metrics_per_epoch'][0]
+                metric_keys = [k for k in first if isinstance(first.get(k), (int, float))]
+                for k in metric_keys:
+                    vals = [m.get(k, 0) for m in results['metrics_per_epoch']]
+                    axes[1].plot(epochs_range, vals, label=k, marker='o', markersize=2)
+                axes[1].set_xlabel('Epoch')
+                axes[1].set_ylabel('Metric')
+                axes[1].set_title('Detection/Segmentation Metrics')
+                axes[1].legend()
+                axes[1].grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.show()
+        except ImportError:
+            if verbose:
+                print("matplotlib not available; skip plotting.")
+
+    return results
+
+
 # ============================================================================
 # CLI Training Function (for backward compatibility)
 # ============================================================================
@@ -1515,6 +1604,21 @@ def run_training_cli():
 # ============================================================================
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Wound Detection Training / Review")
+    parser.add_argument(
+        "--review",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Review training outputs: path to training_results.json or checkpoints directory",
+    )
+    parser.add_argument("--no-plot", action="store_true", help="When using --review, do not show plots")
+    args, rest = parser.parse_known_args()
+
+    if args.review is not None:
+        review_training_results(args.review, plot=not args.no_plot, verbose=True)
+        sys.exit(0)
+
     try:
         results = main()
         if results:

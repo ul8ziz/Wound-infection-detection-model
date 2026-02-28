@@ -522,13 +522,16 @@ def get_transforms(
     if use_medical_augmentation:
         # Use comprehensive medical augmentation strategy
         try:
-            # Try importing from scripts directory
             import sys
             from pathlib import Path
-            project_root = Path(__file__).parent.parent
-            scripts_dir = project_root / "scripts"
-            if (scripts_dir / "augmentation_strategy.py").exists():
-                sys.path.insert(0, str(scripts_dir))
+            this_dir = Path(__file__).resolve().parent
+            # Prefer same directory as this file (per-experiment copy)
+            if (this_dir / "augmentation_strategy.py").exists():
+                sys.path.insert(0, str(this_dir))
+            else:
+                scripts_dir = this_dir.parent.parent / "scripts"
+                if (scripts_dir / "augmentation_strategy.py").exists():
+                    sys.path.insert(0, str(scripts_dir))
             from augmentation_strategy import get_medical_augmentation_pipeline
             return get_medical_augmentation_pipeline(
                 train=train,

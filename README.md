@@ -14,7 +14,8 @@
 ## ⭐ مشروع منظم مع سكريبتات Python و Jupyter Notebooks
 
 **`notebooks/train_model.py`** - سكريبت تدريب موحد شامل  
-**`notebooks/training_pipeline.ipynb`** - Notebook للتدريب والتحليل
+**`notebooks/training_pipeline.ipynb`** - Notebook للتدريب والتحليل  
+**`docs/PROJECT_OVERVIEW.md`** - شرح مفصل للمشروع، المتطلبات، والداتا ست — مرجع للمكلف أو لنموذج AI لفهم المهمة واختيار التقنية المناسبة (Mask R-CNN، YOLO، إلخ)
 
 ---
 
@@ -45,15 +46,18 @@ Wound-infection-detection-model/
 │   └── augmentation_strategy.py   # استراتيجية augmentation
 │
 ├── docs/                           # التوثيق
+│   ├── PROJECT_OVERVIEW.md         # شرح مفصل للمشروع والداتا ست (brief للمكلف/النموذج)
 │   └── DATA_AUGMENTATION_GUIDE.md  # دليل augmentation
 │
-├── checkpoints/                    # النماذج المحفوظة (يُنشأ عند التدريب)
-│   ├── best.pt                     # أفضل نموذج
-│   └── last.pt                     # آخر checkpoint
-├── checkpoints_medical_aug/        # نماذج مع medical augmentation
-│
-├── results/                        # النتائج (بعد Inference)
-│   └── *_result.json
+├── experiments/                    # كل تجربة لها مجلدها: أكوادها + مخرجاتها (الداتا ست مشتركة)
+│   ├── maskrcnn/                   # تجربة Mask R-CNN
+│   │   ├── checkpoints/             # last.pt, best_model.pth, training_results.json, training_report.md
+│   │   ├── results/                 # نتائج الاستدلال (*_result.json)
+│   │   ├── training_pipeline.ipynb  # Notebook هذه التجربة
+│   │   ├── train_model.py           # سكربت التدريب لهذه التجربة
+│   │   ├── pipeline_utils.py        # دوال البيانات لهذه التجربة
+│   │   └── augmentation_strategy.py
+│   └── yolo/                        # تجربة YOLO (عند الإضافة): نفس الهيكل
 │
 ├── requirements.txt                # المكتبات
 └── README.md                       # هذا الملف
@@ -140,15 +144,23 @@ pip install -r requirements.txt
 
 #### الطريقة 1: سكريبت Python (موصى به) 🚀
 
-**التدريب المباشر (يستخدم GPU تلقائياً عند توفّر CUDA):**
+**من مجلد تجربة معيّنة (كل تجربة لها أكوادها):**
 ```bash
-# من مجلد notebooks
+# تجربة Mask R-CNN
+cd experiments/maskrcnn
+python train_model.py
+```
+
+**أو من مجلد notebooks (نسخة عامة):**
+```bash
 cd notebooks
 python train_model.py
 ```
 
-**أو من جذر المشروع:**
+**من جذر المشروع:**
 ```bash
+python experiments/maskrcnn/train_model.py
+# أو
 python notebooks/train_model.py
 ```
 
@@ -159,7 +171,9 @@ python notebooks/train_model.py
 # تفعيل البيئة
 .venv_cuda\Scripts\Activate.ps1
 
-# تشغيل Jupyter
+# تشغيل Jupyter — من مجلد تجربة معيّنة أو من notebooks
+jupyter notebook experiments/maskrcnn/training_pipeline.ipynb
+# أو
 jupyter notebook notebooks/training_pipeline.ipynb
 ```
 
@@ -185,6 +199,27 @@ jupyter notebook notebooks/training_pipeline.ipynb
 4. ⭐⭐ **Training**: التدريب (4-6 ساعات)
 5. ✅ **Evaluation**: التقييم
 6. ⭐ **Inference**: التنبؤ والتحليل
+
+### 4. مخرجات التدريب ومراجعتها (Training outputs and review)
+
+بعد التدريب (من الـ Notebook أو من سكريبت `train_model.py`) تُحفظ المخرجات في مجلد التجربة تحت `experiments/` (مثلاً `experiments/maskrcnn/checkpoints/`):
+
+| الملف | الوصف |
+|-------|--------|
+| `last.pt` | آخر checkpoint (للمتابعة أو المقارنة) |
+| `best_model.pth` | أفضل نموذج حسب validation loss |
+| `training_results.json` | إعدادات التدريب، train/val loss لكل epoch، مقاييس COCO (bbox_AP50, segm_AP50)، وأفضل epoch |
+| `training_report.md` | تقرير Markdown: إعدادات، جداول loss ومقاييس، تحليل تحسن الـ loss |
+
+**مراجعة مخرجات تدريب سابق من سطر الأوامر:**
+```bash
+cd notebooks
+python train_model.py --review ../experiments/maskrcnn/checkpoints
+# أو بدون رسم: --no-plot
+python train_model.py --review ../experiments/maskrcnn/checkpoints --no-plot
+```
+
+**من الـ Notebook:** بعد تشغيل خلية التدريب، شغّل الخلية التالية (رسم منحنيات الـ loss والمقاييس). يمكن أيضاً فتح `training_report.md` أو تحميل `training_results.json` لمراجعة النتائج.
 
 ---
 
@@ -215,6 +250,7 @@ jupyter notebook notebooks/training_pipeline.ipynb
 
 **وظائف التقارير:**
 - `generate_report()` - توليد تقرير Markdown شامل
+- `review_training_results()` - مراجعة مخرجات تدريب سابق (تحميل training_results.json، طباعة ملخص، ورسم منحنيات)
 
 ### `training_pipeline.ipynb` - Notebook للتدريب
 
@@ -231,8 +267,10 @@ jupyter notebook notebooks/training_pipeline.ipynb
 - إعداد Optimizer & Scheduler
 
 **Training:**
-- حلقة التدريب الكاملة
-- حفظ checkpoints تلقائياً
+- حلقة التدريب الكاملة مع تقييم COCO metrics كل epoch
+- حفظ checkpoints تلقائياً (`last.pt`, `best_model.pth`)
+- حفظ `training_results.json` و `training_report.md` في مجلد الـ checkpoints
+- خلية لرسم منحنيات train/val loss والمقاييس بعد انتهاء التدريب
 
 **Evaluation & Inference:**
 - تقييم النموذج
@@ -256,7 +294,7 @@ CONFIG = {
     
     # Training settings (uses GPU/CUDA when available)
     "device_prefer_cuda": True,
-    "output_dir": "../checkpoints_medical_aug",
+    "output_dir": "../experiments/maskrcnn/checkpoints",
     "seed": 42,
     "batch_size": 4,
     "epochs": 50,
@@ -297,12 +335,12 @@ CONFIG = {
 - `data/augmented/` - البيانات المعززة (اختياري)
 
 ### بعد التدريب:
-- `checkpoints_medical_aug/best.pt` - أفضل نموذج
-- `checkpoints_medical_aug/last.pt` - آخر checkpoint
-- `checkpoints_medical_aug/training_results.json` - نتائج التدريب
-- `checkpoints_medical_aug/training_report.md` - تقرير شامل  
+- `experiments/maskrcnn/checkpoints/best_model.pth` - أفضل نموذج
+- `experiments/maskrcnn/checkpoints/last.pt` - آخر checkpoint
+- `experiments/maskrcnn/checkpoints/training_results.json` - نتائج التدريب
+- `experiments/maskrcnn/checkpoints/training_report.md` - تقرير شامل
 
-(أو مجلد `checkpoints/` إذا غيّرت `output_dir` في CONFIG)
+(غيّر `EXPERIMENT_NAME` في الـ CONFIG أو في `train_model.py` لتجربة أخرى؛ الداتا ست `data/` مشتركة بين كل التجارب.)
 
 ### بعد Inference:
 ```json
