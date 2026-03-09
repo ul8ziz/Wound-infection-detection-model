@@ -399,10 +399,19 @@ def evaluate_metrics(
     if hasattr(dataset, 'coco') and HAS_COCO and hasattr(dataset, 'ann_file'):
         print("Using COCO evaluator...")
         coco_gt = dataset.coco
-        
+
+        # Build inverse class mapping: remapped model IDs (1-8) → original CVAT category IDs.
+        # The model outputs labels in the remapped range (1-8) defined by WoundDataset.class_mapping,
+        # but coco_gt was loaded from the original annotation JSON which has the original CVAT IDs
+        # (e.g. 0, 1, 4, 5, 6, 7, 8, 15). Without this inversion, every prediction has the wrong
+        # category_id in the COCO evaluator → AP = 0 for all epochs.
+        inv_class_mapping: dict = {}
+        if hasattr(dataset, 'class_mapping') and dataset.class_mapping:
+            inv_class_mapping = {v: k for k, v in dataset.class_mapping.items()}
+
         coco_results_bbox = []
         coco_results_segm = []
-        
+
         for images, targets in data_loader:
             images = list(img.to(device) for img in images)
             outputs = model(images)
@@ -433,7 +442,7 @@ def evaluate_metrics(
                     
                     res_bbox = {
                         "image_id": image_id,
-                        "category_id": int(labels[i]),
+                        "category_id": inv_class_mapping.get(int(labels[i]), int(labels[i])),
                         "bbox": [x, y, w, h],
                         "score": float(scores[i])
                     }
