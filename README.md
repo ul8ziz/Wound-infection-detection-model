@@ -310,16 +310,18 @@ CONFIG = {
 
 ### في `training_pipeline.ipynb`:
 
-عدّل `CONFIG` في الخلية الأولى:
+Current training CONFIG (after fixes applied 2026-02-28):
 
 ```python
 CONFIG = {
-    "epochs": 50,
-    "batch_size": 4,
-    "lr": 0.005,
-    "image_size": (512, 512),
-    "device": "cuda" if torch.cuda.is_available() else "cpu",  # استخدام GPU عند التدريب
-    "use_medical_augmentation": False,  # True للـ augmentation أثناء التدريب
+    'epochs': 80,            # Raised from 50 for full convergence
+    'learning_rate': 0.001,  # SGD linear-scaled for batch_size=2
+    'batch_size': 2,
+    'image_size': [1024, 1024],
+    'early_stop_patience': 15,   # Raised from 7
+    'early_stop_min_delta': 0.005,
+    # Scheduler: LinearLR warmup (5 epochs) -> CosineAnnealingLR (75 epochs)
+    # Val set: 82/18 split from data/augmented/ (~57 images) instead of 16
 }
 ```
 
