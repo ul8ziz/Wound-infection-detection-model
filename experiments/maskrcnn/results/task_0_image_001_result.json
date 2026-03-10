@@ -1,14 +1,14 @@
 {
   "image_path": "data/task_0/data/task_0_image_001.jpg",
-  "num_detections": 7,
-  "wound_area_cm2": 24.28119362597715,
+  "num_detections": 6,
+  "wound_area_cm2": 24.184843714863952,
   "has_infection": false,
   "infection_confidence": 0.0,
   "findings": {
     "edema": false,
     "hyperemia": false,
     "necrosis": false,
-    "granulation": true,
+    "granulation": false,
     "fibrin": false
   }
 }

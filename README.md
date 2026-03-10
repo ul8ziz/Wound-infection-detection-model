@@ -274,6 +274,7 @@ python train_model.py --review ../experiments/maskrcnn/checkpoints --no-plot
 
 **Evaluation & Inference:**
 - تقييم النموذج
+- **Section 6 (Prediction)** يحمّل افتراضياً `best_model.pth` (أفضل نموذج حسب validation loss؛ راجع `training_results.json` لمعرفة best_epoch و best_metric)
 - تشغيل inference على صور جديدة
 - حساب مساحة الجرح وكشف العدوى
 
