@@ -53,10 +53,9 @@ thesis on postoperative wound infection detection.
   - English equivalents may be used in code: "AllWound", "SizeMarker", etc.
   - Key classes: AllWound (entire wound), SizeMarker (3×3 cm reference),
     EdemaZone, HyperemiaZone, NecrosisZone, GranulationZone, Fibrin, SutureZone
-  - There is also an OFFLINE augmented dataset:
-      `notebooks/1.13.2025/data_augmented/images`
-      and `annotations_augmented.json`
-    where each original image has 3 augmented variants.
+  - There is an OFFLINE augmented dataset (optional): `data/augmented_clean/` with
+    `annotations_augmented_clean.json` — generated from `annotations_cleaned.json` via
+    `apply_augmentation_only.py`. OLD `data/augmented/` is contaminated (pre-cleaning) — do NOT use.
   - Dataset splits: After data preparation, splits are created in `data/splits/`
     (train.json, val.json, test.json). Maintain consistent split ratios.
 
@@ -125,7 +124,7 @@ thesis on postoperative wound infection detection.
 
 - For OFFLINE augmentation:
   - Scripts like `apply_augmentation_only.py` generate new images +
-    `annotations_augmented.json`.
+    `annotations_augmented_clean.json` in `data/augmented_clean/` (from annotations_cleaned.json).
   - When changing these scripts, make sure:
     - `file_name` fields in the JSON correctly match the relative paths
       under the chosen root (e.g. `images/IMG_....jpg`).

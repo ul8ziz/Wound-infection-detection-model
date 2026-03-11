@@ -124,7 +124,7 @@ The augmentation strategy (`scripts/augmentation_strategy.py`) implements three 
 
 The system supports both approaches:
 
-- **Offline Augmentation**: `scripts/apply_augmentation_only.py` generates augmented images and annotations saved to `data/augmented/` (typically 3 augmented versions per original image)
+- **Offline Augmentation**: `scripts/apply_augmentation_only.py` generates augmented images and annotations saved to `data/augmented_clean/` (from `annotations_cleaned.json`; old `data/augmented/` is contaminated)
 - **Online Augmentation**: Applied during training via `get_medical_augmentation_pipeline()` with configurable intensity
 
 ---

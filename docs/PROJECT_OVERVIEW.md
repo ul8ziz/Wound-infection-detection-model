@@ -85,9 +85,9 @@ In code, a subset of these is used (see `TARGET_CLASSES_NAMES` in `pipeline_util
 
 ### 3.6 Augmented Data (Optional)
 
-- **Path:** `data/augmented/` — folder `images/` and file `annotations_augmented.json` in COCO format.
-- **Content:** Augmented copies of original images with annotations copied/transformed per copy. Produced by a script such as `scripts/apply_augmentation_only.py`.
-- **Usage:** Can be used for training instead of (or with) original data to increase diversity while respecting medical constraints (no strong distortion of the marker).
+- **Path:** `data/augmented_clean/` — folder `images/` and file `annotations_augmented_clean.json` in COCO format.
+- **Content:** Augmented copies from **cleaned** annotations only. Produced by `scripts/apply_augmentation_only.py` when run with `annotations_cleaned.json` as input.
+- **Usage:** Optional for training. **Do NOT use** `data/augmented/` — it was generated from pre-cleaning annotations and is contaminated.
 
 ### 3.7 Infection Regions and Class Balance
 
@@ -120,7 +120,7 @@ In code, a subset of these is used (see `TARGET_CLASSES_NAMES` in `pipeline_util
 ## 6. Execution Steps (Summary)
 
 1. **Environment setup:** Python 3.12+, PyTorch + CUDA, `pip install -r requirements.txt`.
-2. **Data setup:** Ensure `data/`, `project.json`, and task folders exist → convert CVAT → COCO → call `split_dataset` → (optional) create `data/augmented/`.
+2. **Data setup:** Ensure `data/`, `project.json`, and task folders exist → run `clean_dataset.py` → (optional) `clean_dataset.py --split` → (optional) `apply_augmentation_only.py` for `data/augmented_clean/`.
 3. **Training:** From the experiment folder (e.g. `experiments/maskrcnn`) run the notebook or `python train_model.py`; outputs in `checkpoints/` (last.pt, best_model.pth, training_results.json, training_report.md).
 4. **Review:** `python train_model.py --review checkpoints` or open the reports and JSON.
 5. **Inference:** Load best model, call inference functions, save results in `results/` as JSON.

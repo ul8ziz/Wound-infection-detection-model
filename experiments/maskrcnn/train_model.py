@@ -1,15 +1,6 @@
 """
-سكريبت تدريب نموذج Mask R-CNN لاكتشاف وقياس الجروح
 Training Script for Mask R-CNN Wound Detection and Measurement Model
 =====================================================================
-
-هذا الملف يدمج جميع وظائف التدريب في مكان واحد:
-- بناء النموذج
-- تدريب النموذج
-- تقييم النموذج
-- حفظ/تحميل checkpoints
-- تشغيل inference
-- توليد التقارير
 
 This file combines all training functions in one place:
 - Model building
@@ -644,57 +635,101 @@ def evaluate_metrics(
 # Checkpoint Functions
 # ============================================================================
 
-def save_checkpoint(
-    state: Dict,
-    output_dir: str,
-    filename: str = "last.pt",
-    is_best: bool = False,
-    best_metric_name: str = "metric",
-    current_metric: float = 0.0,
-    best_filename: str = "best_model.pth"
+def save_best_checkpoint(
+    model: nn.Module,
+    epoch: int,
+    best_combined_AP50: float,
+    bbox_AP50: float,
+    segm_AP50: float,
+    config: Dict,
+    class_mapping: Optional[Dict] = None,
+    output_dir: Union[str, Path] = None,
+    filename: str = "best_model.pth"
 ):
     """
-    Saves checkpoint. Always saves as 'last.pt', and also as 'best_model.pth' if is_best=True.
+    Save best model for inference. Best model is selected by combined_AP50.
     
     Args:
-        state: Dictionary containing model state, optimizer, scheduler, epoch, best_metric, etc.
-        output_dir: Directory to save checkpoints
-        filename: Filename for the checkpoint (default: "last.pt")
-        is_best: If True, also save as "best_model.pth"
-        best_metric_name: Name of the metric being tracked
-        current_metric: Current metric value
-        best_filename: Filename for the best checkpoint
+        model: Model to save
+        epoch: Epoch number
+        best_combined_AP50: Best combined AP50 value
+        bbox_AP50: Bbox AP50 at best epoch
+        segm_AP50: Segmentation AP50 at best epoch
+        config: Training configuration
+        class_mapping: Optional class mapping from dataset
+        output_dir: Directory to save
+        filename: Filename (default: best_model.pth)
     """
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-    save_path = os.path.join(output_dir, filename)
+    state = {
+        "model": model.state_dict(),
+        "model_state_dict": model.state_dict(),  # Alias for clarity
+        "epoch": epoch,
+        "best_combined_AP50": best_combined_AP50,
+        "bbox_AP50": bbox_AP50,
+        "segm_AP50": segm_AP50,
+        "config": config,
+        "class_mapping": class_mapping or {},
+    }
+    out = Path(output_dir) if output_dir else Path(".")
+    out.mkdir(parents=True, exist_ok=True)
+    save_path = out / filename
     torch.save(state, save_path)
+    print(f"  → Best model saved: {save_path} (epoch {epoch}, combined_AP50={best_combined_AP50:.4f})")
+
+
+def save_last_checkpoint(
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
+    epoch: int,
+    metrics: Dict,
+    output_dir: Path,
+    filename: str = "last_checkpoint.pth",
+    scaler: Optional[object] = None
+):
+    """
+    Save last checkpoint for training resume. Overwritten every epoch.
     
-    if is_best:
-        best_path = os.path.join(output_dir, best_filename)
-        torch.save(state, best_path)
-        epoch = state.get('epoch', 'unknown')
-        best_metric = state.get('best_metric', 'unknown')
-        print(f"  → Checkpoint saved: {save_path}")
-        print(f"  → Best model saved: {best_path} (epoch {epoch}, {best_metric_name}={best_metric:.4f})")
-    else:
-        epoch = state.get('epoch', 'unknown')
-        print(f"  → Checkpoint saved: {save_path} (epoch {epoch})")
+    Args:
+        model: Model to save
+        optimizer: Optimizer state
+        scheduler: Scheduler state (or None)
+        epoch: Current epoch
+        metrics: Latest validation metrics (e.g. combined_AP50, bbox_AP50, segm_AP50, val_loss)
+        output_dir: Directory to save
+        filename: Filename (default: last_checkpoint.pth)
+        scaler: Optional GradScaler for AMP
+    """
+    out = Path(output_dir) if output_dir else Path(".")
+    out.mkdir(parents=True, exist_ok=True)
+    save_path = out / filename
+    state = {
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict() if scheduler else None,
+        "scaler": scaler.state_dict() if scaler is not None and hasattr(scaler, "state_dict") else None,
+        "epoch": epoch,
+        "metrics": metrics,
+    }
+    torch.save(state, save_path)
+    print(f"  → Last checkpoint saved: {save_path} (epoch {epoch})")
 
 def load_checkpoint(
     model: nn.Module, 
     path: str, 
     optimizer: Optional[torch.optim.Optimizer] = None, 
-    scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None
+    scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
+    scaler: Optional[object] = None
 ) -> Dict:
     """
-    Load checkpoint from file.
-    Handles PyTorch 2.6+ compatibility with numpy arrays in checkpoints.
+    Load checkpoint from file. Supports both best_model.pth and last_checkpoint.pth formats.
     
     Args:
         model: Model to load state into
         path: Path to checkpoint file
-        optimizer: Optional optimizer to load state into
-        scheduler: Optional scheduler to load state into
+        optimizer: Optional optimizer to load state into (for resume)
+        scheduler: Optional scheduler to load state into (for resume)
+        scaler: Optional GradScaler to load state into (for AMP resume)
     
     Returns:
         Dict: Checkpoint dictionary
@@ -733,11 +768,18 @@ def load_checkpoint(
     if not load_success:
         checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     
-    model.load_state_dict(checkpoint["model"])
-    if optimizer and "optimizer" in checkpoint:
+    # Load model state (support both "model" and "model_state_dict" keys)
+    model_state = checkpoint.get("model") or checkpoint.get("model_state_dict")
+    if model_state is None:
+        raise KeyError(f"Checkpoint missing 'model' or 'model_state_dict' key: {path}")
+    model.load_state_dict(model_state)
+    
+    if optimizer and "optimizer" in checkpoint and checkpoint["optimizer"] is not None:
         optimizer.load_state_dict(checkpoint["optimizer"])
-    if scheduler and "scheduler" in checkpoint:
+    if scheduler and "scheduler" in checkpoint and checkpoint["scheduler"] is not None:
         scheduler.load_state_dict(checkpoint["scheduler"])
+    if scaler and "scaler" in checkpoint and checkpoint["scaler"] is not None and hasattr(scaler, "load_state_dict"):
+        scaler.load_state_dict(checkpoint["scaler"])
     return checkpoint
 
 # ============================================================================
@@ -968,10 +1010,17 @@ EXPERIMENT_NAME = "maskrcnn"
 
 CONFIG = {
     # Data paths (shared; project root)
+    # DATA_MODE: clean_only | clean_online_aug | clean_offline_aug
+    # - clean_only: annotations_cleaned/splits, use_medical_augmentation=False
+    # - clean_online_aug: annotations_cleaned/splits + online augmentation (recommended)
+    # - clean_offline_aug: data/augmented_clean/ (run apply_augmentation_only.py from cleaned first)
+    "data_mode": "clean_online_aug",
     "data_root": "../../data",  # From experiments/maskrcnn/ -> project data/
     "ann_file_train": "../../data/splits/train.json",
     "ann_file_val": "../../data/splits/val.json",
     "ann_file_full": "../../data/annotations.json",
+    "ann_file_cleaned": "../../data/annotations_cleaned.json",  # Prefer over ann_file_full when splits missing
+    "ann_file_offline_aug": "../../data/augmented_clean/annotations_augmented_clean.json",  # Mode 3 only
     
     # Training settings
     "output_dir": "checkpoints",  # This folder (experiments/maskrcnn/checkpoints)
@@ -982,9 +1031,12 @@ CONFIG = {
     "lr": 0.005,
     "image_size": (512, 512),
 
-    # Early stopping
+    # Early stopping (based on combined_AP50; higher is better)
     "early_stop_patience": 7,
     "early_stop_min_delta": 0.001,
+
+    # Checkpoint: save debug checkpoint every N epochs (0 = disabled)
+    "save_checkpoint_every_n_epochs": 0,
 
     # Training stability
     "loss_clip_max": 100.0,
@@ -1030,45 +1082,80 @@ def main():
     train_ann = (script_dir / CONFIG["ann_file_train"]).resolve()
     val_ann = (script_dir / CONFIG["ann_file_val"]).resolve()
     ann_full = (script_dir / CONFIG["ann_file_full"]).resolve()
+    ann_cleaned = (script_dir / CONFIG["ann_file_cleaned"]).resolve()
+    ann_offline_aug = (script_dir / CONFIG["ann_file_offline_aug"]).resolve()
     data_root = (script_dir / CONFIG["data_root"]).resolve()
+    aug_clean_root = (script_dir / "../../data/augmented_clean").resolve()
     
-    # Check if split files exist
-    if not train_ann.exists():
-        print(f"[WARNING] Split file {train_ann} not found.")
-        print(f"   Using full annotation file: {ann_full}")
-        train_ann = ann_full
-        val_ann = ann_full
+    # DATA_MODE: clean_only | clean_online_aug | clean_offline_aug
+    # OLD data/augmented/ is contaminated (from pre-cleaning) - do NOT use
+    data_mode = CONFIG.get("data_mode", "clean_online_aug")
+    
+    # Resolve train/val annotation files and roots per mode
+    use_medical_aug = CONFIG["use_medical_augmentation"]
+    if data_mode == "clean_only":
+        use_medical_aug = False
+        if not train_ann.exists() and ann_cleaned.exists():
+            train_ann = ann_cleaned
+            val_ann = ann_cleaned
+        elif not train_ann.exists():
+            train_ann = ann_full
+            val_ann = ann_full
+        train_root = val_root = data_root
+    elif data_mode == "clean_online_aug":
+        if not train_ann.exists() and ann_cleaned.exists():
+            train_ann = ann_cleaned
+            val_ann = ann_cleaned
+        elif not train_ann.exists():
+            train_ann = ann_full
+            val_ann = ann_full
+        train_root = val_root = data_root
+    elif data_mode == "clean_offline_aug":
+        if not ann_offline_aug.exists():
+            raise FileNotFoundError(
+                f"Offline augmented data not found: {ann_offline_aug}. "
+                "Run: cd scripts && python apply_augmentation_only.py"
+            )
+        train_ann = ann_offline_aug
+        train_root = aug_clean_root
+        if not val_ann.exists() and ann_cleaned.exists():
+            val_ann = ann_cleaned
+        val_root = data_root
+    else:
+        raise ValueError(f"Unknown data_mode: {data_mode}")
     
     # Create datasets
     print("=" * 80)
     print("Loading Datasets")
     print("=" * 80)
+    print(f"Data mode: {data_mode}")
     print(f"Train annotations: {train_ann}")
+    print(f"Train root: {train_root}")
     print(f"Val annotations: {val_ann}")
-    print(f"Data root: {data_root}")
+    print(f"Val root: {val_root}")
     print()
-    print(f"Medical Augmentation: {CONFIG['use_medical_augmentation']}")
+    print(f"Medical Augmentation: {use_medical_aug}")
     print(f"Preserve Marker: {CONFIG['preserve_marker']}")
     print(f"Intensity: {CONFIG['intensity']}")
     print()
     
     try:
         train_dataset = create_dataset(
-            root=str(data_root),
+            root=str(train_root),
             annotation_file=str(train_ann),
             train=True,
             image_size=CONFIG["image_size"],
-            use_medical_augmentation=CONFIG["use_medical_augmentation"],
+            use_medical_augmentation=use_medical_aug,
             preserve_marker=CONFIG["preserve_marker"],
             intensity=CONFIG["intensity"]
         )
         
         val_dataset = create_dataset(
-            root=str(data_root),
+            root=str(val_root),
             annotation_file=str(val_ann),
             train=False,
             image_size=CONFIG["image_size"],
-            use_medical_augmentation=CONFIG["use_medical_augmentation"],
+            use_medical_augmentation=False,
             preserve_marker=CONFIG["preserve_marker"],
             intensity=CONFIG["intensity"]
         )
@@ -1144,7 +1231,7 @@ def main():
     _ckpt_dir = script_dir / CONFIG["output_dir"]
     if _ckpt_dir.exists() and (list(_ckpt_dir.glob("*.pth")) or list(_ckpt_dir.glob("*.pt"))):
         print("[WARNING] If you changed the number of classes (e.g. from raw COCO categories to dataset.num_classes), "
-              "delete existing checkpoints (best_model.pth, last.pt, checkpoint_epoch_*.pth) or training will fail or behave incorrectly.")
+              "delete existing checkpoints (best_model.pth, last_checkpoint.pth) or training will fail or behave incorrectly.")
         print()
     
     # Optimizer and scheduler
@@ -1156,15 +1243,17 @@ def main():
     print(f"Scheduler: StepLR (step_size=5, gamma=0.1)")
     print()
     
-    # Training results storage
+    # Training results storage (best model by combined_AP50; higher is better)
     results = {
         "config": CONFIG.copy(),
         "train_losses": [],
         "val_losses": [],
         "metrics_per_epoch": [],
-        "best_metric": float("inf"),
+        "best_metric": 0.0,
         "best_epoch": 0,
-        "best_metric_name": "val_loss",
+        "best_metric_name": "combined_AP50",
+        "best_bbox_AP50": 0.0,
+        "best_segm_AP50": 0.0,
         "training_start": datetime.now().isoformat(),
         "training_time": None,
         "device": str(device),
@@ -1184,20 +1273,22 @@ def main():
     print()
     
     start_time = time.time()
-    best_val_loss = float("inf")
+    best_combined_AP50 = 0.0
     best_epoch = 0
-    best_metric_name = "val_loss"
+    best_metric_name = "combined_AP50"
     early_stop_patience = CONFIG.get("early_stop_patience", 0)
     early_stop_min_delta = CONFIG.get("early_stop_min_delta", 0.0)
     epochs_without_improve = 0
-    
+    save_every_n = CONFIG.get("save_checkpoint_every_n_epochs", 0)
+    class_mapping = getattr(base_dataset, "class_mapping", {})
+
     try:
         for epoch in range(CONFIG["epochs"]):
             epoch_start = time.time()
-            
+
             print(f"Epoch [{epoch+1}/{CONFIG['epochs']}]")
             print("-" * 80)
-            
+
             # Train
             train_stats = train_one_epoch(
                 model,
@@ -1212,7 +1303,7 @@ def main():
                 skip_invalid_targets=CONFIG.get("skip_invalid_targets", True)
             )
             results["train_losses"].append(train_stats["total_loss"])
-            
+
             # Validate
             val_stats = validate_one_epoch(
                 model,
@@ -1223,51 +1314,71 @@ def main():
                 skip_invalid_targets=CONFIG.get("skip_invalid_targets", True)
             )
             results["val_losses"].append(val_stats["total_loss"])
-            
-            # Evaluate metrics
+
+            # Evaluate metrics (COCO AP50)
             print("Evaluating metrics...")
             metrics = evaluate_metrics(model, val_loader, device)
             results["metrics_per_epoch"].append(metrics)
-            
-            current_metric = val_stats["total_loss"]
-            
+
+            combined_AP50 = metrics.get("combined_AP50", 0.0)
+            bbox_AP50 = metrics.get("bbox_AP50", 0.0)
+            segm_AP50 = metrics.get("segm_AP50", bbox_AP50)
+            metrics["val_loss"] = val_stats["total_loss"]
+
             # Print epoch summary
             print(f"Train Loss: {train_stats['total_loss']:.4f} | Val Loss: {val_stats['total_loss']:.4f}")
-            print(f"Current {best_metric_name}: {current_metric:.4f}")
-            
-            # Save checkpoints
-            is_best = current_metric < (best_val_loss - early_stop_min_delta)
+            print(f"combined_AP50: {combined_AP50:.4f} | bbox_AP50: {bbox_AP50:.4f} | segm_AP50: {segm_AP50:.4f}")
+
+            # Best model selection: higher combined_AP50 is better
+            is_best = combined_AP50 > (best_combined_AP50 + early_stop_min_delta)
             if is_best:
-                best_val_loss = current_metric
+                best_combined_AP50 = combined_AP50
                 best_epoch = epoch + 1
-                results["best_metric"] = best_val_loss
+                results["best_metric"] = best_combined_AP50
                 results["best_epoch"] = best_epoch
+                results["best_bbox_AP50"] = bbox_AP50
+                results["best_segm_AP50"] = segm_AP50
                 epochs_without_improve = 0
-                print(f"✓ NEW BEST! {best_metric_name}: {best_val_loss:.4f} (Epoch {best_epoch})")
+                print(f"✓ NEW BEST! combined_AP50: {best_combined_AP50:.4f} (Epoch {best_epoch})")
+                save_best_checkpoint(
+                    model,
+                    epoch=epoch + 1,
+                    best_combined_AP50=best_combined_AP50,
+                    bbox_AP50=bbox_AP50,
+                    segm_AP50=segm_AP50,
+                    config=CONFIG.copy(),
+                    class_mapping=class_mapping,
+                    output_dir=output_dir,
+                    filename="best_model.pth"
+                )
             else:
                 epochs_without_improve += 1
-                gap = current_metric - best_val_loss
-                print(f"  (Best: {best_val_loss:.4f}, Gap: {gap:.4f})")
-            
-            # Save checkpoints
-            save_checkpoint(
-                {
+                gap = best_combined_AP50 - combined_AP50
+                print(f"  (Best: {best_combined_AP50:.4f}, Gap: {gap:.4f})")
+
+            # Always save last checkpoint
+            save_last_checkpoint(
+                model,
+                optimizer,
+                lr_scheduler,
+                epoch=epoch + 1,
+                metrics=metrics,
+                output_dir=output_dir,
+                filename="last_checkpoint.pth",
+                scaler=None
+            )
+
+            # Optional: save debug checkpoint every N epochs
+            if save_every_n > 0 and (epoch + 1) % save_every_n == 0:
+                debug_path = output_dir / f"checkpoint_epoch_{epoch+1}.pth"
+                torch.save({
                     "model": model.state_dict(),
                     "optimizer": optimizer.state_dict(),
                     "scheduler": lr_scheduler.state_dict(),
                     "epoch": epoch + 1,
-                    "best_metric": best_val_loss,
-                    "best_metric_name": best_metric_name,
-                    "current_metric": current_metric,
-                    "config": str(CONFIG)
-                },
-                str(output_dir),
-                filename="last.pt",
-                is_best=is_best,
-                best_metric_name=best_metric_name,
-                current_metric=current_metric,
-                best_filename="best_model.pth"
-            )
+                    "metrics": metrics
+                }, debug_path)
+                print(f"  → Debug checkpoint saved: {debug_path}")
 
             if early_stop_patience > 0 and epochs_without_improve >= early_stop_patience:
                 print(f"Early stopping triggered after {epochs_without_improve} epochs without improvement.")
@@ -1353,8 +1464,8 @@ def main():
     print(f"Final val loss: {results['val_losses'][-1]:.4f}")
     print()
     print(f"Checkpoints saved to: {output_dir}")
-    print(f"  - best_model.pth (epoch {best_epoch})")
-    print(f"  - last.pt (epoch {CONFIG['epochs']})")
+    print(f"  - best_model.pth (epoch {best_epoch}, combined_AP50={results['best_metric']:.4f})")
+    print(f"  - last_checkpoint.pth (for resume)")
     print()
     print("=" * 80)
     print("[OK] Training Complete!")
@@ -1450,7 +1561,7 @@ def generate_report(results: dict, output_file: Path):
         report.append(f"- **Train Loss**: {initial_train_loss:.4f} -> {final_train_loss:.4f} ({train_improvement:+.2f}%)\n")
         report.append(f"- **Val Loss**: {initial_val_loss:.4f} -> {final_val_loss:.4f} ({val_improvement:+.2f}%)\n\n")
     
-    if results["metrics_per_epoch"] and results.get("best_metric_name") != "val_loss":
+    if results["metrics_per_epoch"] and results.get("best_metric_name") == "combined_AP50":
         first_metric = results["metrics_per_epoch"][0].get("combined_AP50", results["metrics_per_epoch"][0].get("bbox_AP50", 0.0))
         best_metric = results["best_metric"]
         if first_metric > 0:
@@ -1632,7 +1743,7 @@ def run_training_cli():
     _ckpt_dir = Path(args.output_dir)
     if _ckpt_dir.exists() and (list(_ckpt_dir.glob("*.pth")) or list(_ckpt_dir.glob("*.pt"))):
         print("[WARNING] If you changed the number of classes (e.g. from raw COCO categories to dataset.num_classes), "
-              "delete existing checkpoints (best_model.pth, last.pt, checkpoint_epoch_*.pth) or training will fail or behave incorrectly.")
+              "delete existing checkpoints (best_model.pth, last_checkpoint.pth) or training will fail or behave incorrectly.")
         print()
     
     # Optimizer
@@ -1640,11 +1751,13 @@ def run_training_cli():
     optimizer = optim.SGD(params, lr=args.lr, momentum=0.9, weight_decay=0.0005)
     lr_scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
     
-    best_val_loss = float("inf")
+    best_combined_AP50 = 0.0
     early_stop_patience = 7
     early_stop_min_delta = 0.001
     epochs_without_improve = 0
-    
+    base_dataset = train_dataset.dataset if isinstance(train_dataset, torch.utils.data.Subset) else train_dataset
+    class_mapping = getattr(base_dataset, "class_mapping", {})
+
     for epoch in range(args.epochs):
         loss_dict = train_one_epoch(
             model,
@@ -1668,31 +1781,38 @@ def run_training_cli():
         print(f"Epoch {epoch} Val Loss: {val_loss_dict['total_loss']:.4f}")
         
         metrics = evaluate_metrics(model, val_loader, device)
+        combined_AP50 = metrics.get("combined_AP50", 0.0)
+        bbox_AP50 = metrics.get("bbox_AP50", 0.0)
+        segm_AP50 = metrics.get("segm_AP50", bbox_AP50)
+        metrics["val_loss"] = val_loss_dict["total_loss"]
         
-        current_metric = val_loss_dict["total_loss"]
-        is_best = current_metric < (best_val_loss - early_stop_min_delta)
+        is_best = combined_AP50 > (best_combined_AP50 + early_stop_min_delta)
         if is_best:
-            best_val_loss = current_metric
+            best_combined_AP50 = combined_AP50
             epochs_without_improve = 0
+            save_best_checkpoint(
+                model,
+                epoch=epoch + 1,
+                best_combined_AP50=best_combined_AP50,
+                bbox_AP50=bbox_AP50,
+                segm_AP50=segm_AP50,
+                config=CONFIG.copy(),
+                class_mapping=class_mapping,
+                output_dir=Path(args.output_dir),
+                filename="best_model.pth"
+            )
         else:
             epochs_without_improve += 1
             
-        save_checkpoint(
-            {
-                "model": model.state_dict(),
-                "optimizer": optimizer.state_dict(),
-                "scheduler": lr_scheduler.state_dict(),
-                "epoch": epoch,
-                "best_metric": best_val_loss,
-                "best_metric_name": "val_loss",
-                "current_metric": current_metric
-            },
-            args.output_dir,
-            "last.pt",
-            is_best,
-            best_metric_name="val_loss",
-            current_metric=current_metric,
-            best_filename="best_model.pth"
+        save_last_checkpoint(
+            model,
+            optimizer,
+            lr_scheduler,
+            epoch=epoch + 1,
+            metrics=metrics,
+            output_dir=Path(args.output_dir),
+            filename="last_checkpoint.pth",
+            scaler=None
         )
         
         lr_scheduler.step()
@@ -1715,7 +1835,16 @@ if __name__ == "__main__":
         help="Review training outputs: path to training_results.json or checkpoints directory",
     )
     parser.add_argument("--no-plot", action="store_true", help="When using --review, do not show plots")
+    parser.add_argument(
+        "--data-mode",
+        choices=["clean_only", "clean_online_aug", "clean_offline_aug"],
+        default=None,
+        help="Override CONFIG data_mode: clean_only | clean_online_aug (recommended) | clean_offline_aug",
+    )
     args, rest = parser.parse_known_args()
+
+    if args.data_mode is not None:
+        CONFIG["data_mode"] = args.data_mode
 
     if args.review is not None:
         review_training_results(args.review, plot=not args.no_plot, verbose=True)

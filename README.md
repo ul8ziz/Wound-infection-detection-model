@@ -1,295 +1,334 @@
 # 🏥 Wound Infection Detection
 
-**كشف علامات العدوى في الجروح الجراحية باستخدام Deep Learning**
+**Detecting infection signs in surgical wounds using Deep Learning**
 
-## ⚡ البيئة الموصى بها
+## ⚡ Recommended Environment
 
-**⚠️ مهم:** هذا المشروع يستخدم بيئة `.venv_cuda` مع:
+**⚠️ Important:** This project uses `.venv_cuda` with:
 - **Python 3.12.10**
-- **PyTorch 2.5.1+cu121** (مع دعم CUDA)
+- **PyTorch 2.5.1+cu121** (with CUDA support)
 - **CUDA 12.1**
 
-البيئة جاهزة للاستخدام مع GPU (NVIDIA GeForce RTX 4060 أو أفضل).
+Environment ready for GPU (NVIDIA GeForce RTX 4060 or better).
 
-## ⭐ مشروع منظم مع سكريبتات Python و Jupyter Notebooks
+## ⭐ Organized project with Python scripts and Jupyter Notebooks
 
-**`notebooks/train_model.py`** - سكريبت تدريب موحد شامل  
-**`notebooks/training_pipeline.ipynb`** - Notebook للتدريب والتحليل  
-**`docs/PROJECT_OVERVIEW.md`** - شرح مفصل للمشروع، المتطلبات، والداتا ست — مرجع للمكلف أو لنموذج AI لفهم المهمة واختيار التقنية المناسبة (Mask R-CNN، YOLO، إلخ)
+**`experiments/maskrcnn/train_model.py`** - Unified training script  
+**`experiments/maskrcnn/training_pipeline.ipynb`** - Notebook for training and analysis  
+**`docs/PROJECT_OVERVIEW.md`** - Detailed project overview, requirements, and dataset — reference for understanding the task and choosing the right approach (Mask R-CNN, YOLO, etc.)
 
 ---
 
-## 📁 هيكل المشروع
+## 📁 Project Structure
 
 ```
 Wound-infection-detection-model/
-├── data/                          # البيانات (241 task)
-│   ├── task_0/ ... task_240/      # البيانات الأصلية
+├── data/                          # Data (241 tasks)
+│   ├── task_0/ ... task_240/      # Original data
 │   ├── project.json
-│   ├── annotations.json           # جميع البيانات (COCO format)
-│   ├── splits/                    # تقسيمات البيانات
+│   ├── annotations.json           # All data (COCO format)
+│   ├── annotations_cleaned.json   # Cleaned annotations (after clean_dataset.py)
+│   ├── splits/                    # Data splits
 │   │   ├── train.json
 │   │   ├── val.json
 │   │   └── test.json
-│   └── augmented/                 # البيانات المعززة (اختياري)
-│       ├── annotations_augmented.json
+│   └── augmented_clean/             # Augmented data from cleaned (optional; do NOT use old data/augmented)
+│       ├── annotations_augmented_clean.json
 │       └── images/
 │
-├── notebooks/
-│   ├── train_model.py             # ⭐⭐ سكريبت التدريب الموحد (يدمج جميع وظائف التدريب)
-│   ├── training_pipeline.ipynb    # Notebook للتدريب والتحليل
-│   ├── pipeline_utils.py          # دوال معالجة البيانات
-│   └── INFERENCE_GUIDE.md         # دليل الاستدلال والتحليل
+├── scripts/                        # Helper scripts
+│   ├── clean_dataset.py            # Clean annotations (filter, simplify, validate)
+│   ├── validate_cleaned_dataset.py # Validate annotations_cleaned.json
+│   ├── visualize_cleaned_dataset.py # Visualize cleaned annotations
+│   ├── apply_augmentation_only.py  # Apply augmentation to data
+│   └── augmentation_strategy.py   # Augmentation strategy
 │
-├── scripts/                        # سكريبتات مساعدة
-│   ├── apply_augmentation_only.py # تطبيق augmentation على البيانات
-│   └── augmentation_strategy.py   # استراتيجية augmentation
+├── docs/                           # Documentation
+│   ├── PROJECT_OVERVIEW.md         # Detailed project and dataset overview
+│   └── DATA_AUGMENTATION_GUIDE.md  # Augmentation guide
 │
-├── docs/                           # التوثيق
-│   ├── PROJECT_OVERVIEW.md         # شرح مفصل للمشروع والداتا ست (brief للمكلف/النموذج)
-│   └── DATA_AUGMENTATION_GUIDE.md  # دليل augmentation
-│
-├── experiments/                    # كل تجربة لها مجلدها: أكوادها + مخرجاتها (الداتا ست مشتركة)
-│   ├── maskrcnn/                   # تجربة Mask R-CNN
-│   │   ├── checkpoints/             # last.pt, best_model.pth, training_results.json, training_report.md
-│   │   ├── results/                 # نتائج الاستدلال (*_result.json)
-│   │   ├── training_pipeline.ipynb  # Notebook هذه التجربة
-│   │   ├── train_model.py           # سكربت التدريب لهذه التجربة
-│   │   ├── pipeline_utils.py        # دوال البيانات لهذه التجربة
+├── experiments/                    # Each experiment has its folder: code + outputs (shared dataset)
+│   ├── maskrcnn/                   # Mask R-CNN experiment
+│   │   ├── checkpoints/            # last.pt, best_model.pth, training_results.json, training_report.md
+│   │   ├── results/                 # Inference results (*_result.json)
+│   │   ├── training_pipeline.ipynb  # Notebook for this experiment
+│   │   ├── train_model.py           # Training script for this experiment
+│   │   ├── pipeline_utils.py        # Data utilities for this experiment
 │   │   └── augmentation_strategy.py
-│   └── yolo/                        # تجربة YOLO (عند الإضافة): نفس الهيكل
+│   └── yolo/                        # YOLO experiment (when added): same structure
 │
-├── requirements.txt                # المكتبات
-└── README.md                       # هذا الملف
+├── requirements.txt                # Dependencies
+└── README.md                       # This file
 ```
 
 ---
 
-## 🚀 البدء السريع
+## 🚀 Quick Start
 
-### 1. التثبيت
+### 1. Installation
 
-#### 🐍 الطريقة الموصى بها: بيئة Python مع دعم CUDA
+#### 🐍 Recommended: Python environment with CUDA support
 
-**⚠️ مهم:** هذا المشروع يستخدم بيئة `.venv_cuda` مع Python 3.12 و PyTorch مع دعم CUDA.
+**⚠️ Important:** This project uses `.venv_cuda` with Python 3.12 and PyTorch with CUDA support.
 
 **Windows:**
 ```powershell
-# إنشاء البيئة مع Python 3.12 (إذا لم تكن موجودة)
+# Create environment with Python 3.12 (if not exists)
 py -3.12 -m venv .venv_cuda
 
-# تفعيل البيئة
+# Activate environment
 .venv_cuda\Scripts\Activate.ps1
 
-# تثبيت PyTorch مع CUDA
+# Install PyTorch with CUDA
 python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 
-# تثبيت باقي المكتبات
+# Install remaining packages
 python -m pip install -r requirements.txt
 
-# إعداد Jupyter Kernel
+# Setup Jupyter Kernel
 python -m ipykernel install --user --name=venv_cuda --display-name="Python 3.12 (CUDA)"
 ```
 
 **Linux/Mac:**
 ```bash
-# إنشاء البيئة مع Python 3.12
+# Create environment with Python 3.12
 python3.12 -m venv .venv_cuda
 
-# تفعيل البيئة
+# Activate environment
 source .venv_cuda/bin/activate
 
-# تثبيت PyTorch مع CUDA
+# Install PyTorch with CUDA
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 
-# تثبيت باقي المكتبات
+# Install remaining packages
 pip install -r requirements.txt
 
-# إعداد Jupyter Kernel
+# Setup Jupyter Kernel
 python -m ipykernel install --user --name=venv_cuda --display-name="Python 3.12 (CUDA)"
 ```
 
-> **💡 الأفضل:** استخدم بيئة Python منفصلة لكل مشروع مع دعم CUDA
+> **💡 Best practice:** Use a separate Python environment per project with CUDA support
 
-#### 📝 التحقق من CUDA
+### Dataset cleaning (recommended before training)
 
-بعد التثبيت، تحقق من أن CUDA يعمل:
+To fix noisy polygons, invalid masks, and class mismatches that cause near-zero AP:
+
+```bash
+cd scripts
+# Clean from CVAT tasks (default)
+python clean_dataset.py --input-mode cvat --data-root ../data
+# Or from existing COCO JSON
+python clean_dataset.py --input-mode coco --input-file ../data/annotations.json
+# Regenerate train/val/test splits from cleaned data
+python clean_dataset.py --input-mode cvat --split
+```
+
+Output: `data/annotations_cleaned.json`, `data/cleaning_report.txt`. Validate and visualize:
+
+```bash
+python validate_cleaned_dataset.py
+python visualize_cleaned_dataset.py --num-samples 8
+```
+
+**Train on cleaned data:** If splits are missing, `train_model.py` automatically uses `annotations_cleaned.json`. After `clean_dataset.py --split`, use `data/splits/train.json` (derived from cleaned data).
+
+See [docs/DATASET_CLEANING_REPORT.md](docs/DATASET_CLEANING_REPORT.md) for a full report of what was broken, cleaned, and how to use the pipeline.
+
+#### Augmentation (online recommended)
+
+Training uses **online augmentation** by default (Mode 2: clean + online). Set `data_mode` in CONFIG:
+
+| Mode | data_mode | Description |
+|------|-----------|-------------|
+| 1 | `clean_only` | No augmentation |
+| 2 | `clean_online_aug` | Clean + online augmentation (recommended) |
+| 3 | `clean_offline_aug` | Clean + offline augmented_clean + online |
+
+**Regenerate offline augmentation (optional):**
+```bash
+cd scripts
+python apply_augmentation_only.py
+```
+Requires `data/annotations_cleaned.json`. Output: `data/augmented_clean/`. Do NOT use old `data/augmented/` — it is contaminated.
+
+See [docs/augmentation_pipeline.md](docs/augmentation_pipeline.md) for full documentation. For `augmented_clean` inputs, outputs, and workflow, see [docs/AUGMENTED_CLEAN.md](docs/AUGMENTED_CLEAN.md).
+
+**Exact commands (from project root):**
+```bash
+# 1. Clean dataset
+cd scripts
+python clean_dataset.py --input-mode cvat --data-root ../data
+
+# 2. Regenerate splits (optional)
+python clean_dataset.py --input-mode coco --input-file ../data/annotations_cleaned.json --split
+
+# 3. Regenerate offline augmentation (optional, Mode 3 only)
+python apply_augmentation_only.py
+
+# 4. Training
+cd ../experiments/maskrcnn
+python train_model.py
+# Or override data mode: python train_model.py --data-mode clean_online_aug
+```
+
+#### 📝 Verify CUDA
+
+After installation, verify CUDA works:
 ```python
 import torch
 print(f"CUDA available: {torch.cuda.is_available()}")
 print(f"GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'N/A'}")
 ```
 
-**النتيجة المتوقعة:**
+**Expected output:**
 ```
 CUDA available: True
 GPU: NVIDIA GeForce RTX 4060 Laptop GPU
 ```
 
-#### 📝 الطريقة اليدوية (Anaconda)
+#### 📝 Manual method (Anaconda)
 
-إذا كنت تستخدم Anaconda:
+If using Anaconda:
 ```bash
-# 1. PyTorch (مع CUDA 12.1)
+# 1. PyTorch (with CUDA 12.1)
 conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia -y
 
-# 2. المكتبات الأخرى
+# 2. Other packages
 conda install opencv numpy pandas matplotlib seaborn -y
 pip install -r requirements.txt
 ```
 
-> **💡 نصيحة:** الأفضل استخدام بيئة `.venv_cuda` مع Python 3.12
+> **💡 Tip:** Prefer using `.venv_cuda` with Python 3.12
 
-### 2. طريقة الاستخدام
+### 2. Usage
 
-#### الطريقة 1: سكريبت Python (موصى به) 🚀
+#### Method 1: Jupyter Notebook (recommended for training) 📓
 
-**من مجلد تجربة معيّنة (كل تجربة لها أكوادها):**
-```bash
-# تجربة Mask R-CNN
-cd experiments/maskrcnn
-python train_model.py
-```
-
-**أو من مجلد notebooks (نسخة عامة):**
-```bash
-cd notebooks
-python train_model.py
-```
-
-**من جذر المشروع:**
-```bash
-python experiments/maskrcnn/train_model.py
-# أو
-python notebooks/train_model.py
-```
-
-#### الطريقة 2: Jupyter Notebook
-
-**الطريقة الموصى بها:**
+**Use `training_pipeline.ipynb` for training — interactive interface with editable CONFIG:**
 ```powershell
-# تفعيل البيئة
+# Activate environment
 .venv_cuda\Scripts\Activate.ps1
 
-# تشغيل Jupyter — من مجلد تجربة معيّنة أو من notebooks
-jupyter notebook experiments/maskrcnn/training_pipeline.ipynb
-# أو
-jupyter notebook notebooks/training_pipeline.ipynb
+# Run Notebook from experiment folder
+cd experiments/maskrcnn
+jupyter notebook training_pipeline.ipynb
 ```
 
-**⚠️ مهم:** في Jupyter Notebook:
-1. افتح `training_pipeline.ipynb`
-2. اختر **Kernel → Change Kernel → Python 3.12 (CUDA)**
-3. شغّل الخلايا - سيتم استخدام GPU تلقائياً
+**⚠️ Important:** In Jupyter Notebook:
+1. Open `training_pipeline.ipynb`
+2. Select **Kernel → Change Kernel → Python 3.12 (CUDA)**
+3. Run cells — GPU will be used automatically
 
-**أو يدوياً:**
+#### Method 2: Python script (alternative)
+
 ```bash
-# تفعيل البيئة أولاً
-# Windows: .venv_cuda\Scripts\activate
-# Linux/Mac: source .venv_cuda/bin/activate
-
-jupyter notebook notebooks/training_pipeline.ipynb
+cd experiments/maskrcnn
+python train_model.py
+# Or: python train_model.py --data-mode clean_offline_aug
 ```
 
-### 3. شغّل الخلايا بالترتيب (في Notebook)
+### 3. Run cells in order (in Notebook)
 
 1. ✅ **Setup**: Import + Config
-2. ⭐ **Data Loading**: تحميل البيانات
-3. ✅ **Model Building**: بناء النموذج
-4. ⭐⭐ **Training**: التدريب (4-6 ساعات)
-5. ✅ **Evaluation**: التقييم
-6. ⭐ **Inference**: التنبؤ والتحليل
+2. ⭐ **Data Loading**: Load data
+3. ✅ **Model Building**: Build model
+4. ⭐⭐ **Training**: Training (4-6 hours)
+5. ✅ **Evaluation**: Evaluation
+6. ⭐ **Inference**: Prediction and analysis
 
-### 4. مخرجات التدريب ومراجعتها (Training outputs and review)
+### 4. Training outputs and review
 
-بعد التدريب (من الـ Notebook أو من سكريبت `train_model.py`) تُحفظ المخرجات في مجلد التجربة تحت `experiments/` (مثلاً `experiments/maskrcnn/checkpoints/`):
+After training (from Notebook or `train_model.py` script), outputs are saved in the experiment folder under `experiments/` (e.g. `experiments/maskrcnn/checkpoints/`):
 
-| الملف | الوصف |
+| File | Description |
 |-------|--------|
-| `last.pt` | آخر checkpoint (للمتابعة أو المقارنة) |
-| `best_model.pth` | أفضل نموذج حسب validation loss |
-| `training_results.json` | إعدادات التدريب، train/val loss لكل epoch، مقاييس COCO (bbox_AP50, segm_AP50)، وأفضل epoch |
-| `training_report.md` | تقرير Markdown: إعدادات، جداول loss ومقاييس، تحليل تحسن الـ loss |
+| `last.pt` | Last checkpoint (for resuming or comparison) |
+| `best_model.pth` | Best model by validation loss |
+| `training_results.json` | Training config, train/val loss per epoch, COCO metrics (bbox_AP50, segm_AP50), best epoch |
+| `training_report.md` | Markdown report: config, loss/metric tables, loss improvement analysis |
 
-**مراجعة مخرجات تدريب سابق من سطر الأوامر:**
+**Review previous training outputs from command line:**
 ```bash
-cd notebooks
-python train_model.py --review ../experiments/maskrcnn/checkpoints
-# أو بدون رسم: --no-plot
-python train_model.py --review ../experiments/maskrcnn/checkpoints --no-plot
+cd experiments/maskrcnn
+python train_model.py --review checkpoints
+# Or without plotting: --no-plot
+python train_model.py --review checkpoints --no-plot
 ```
 
-**من الـ Notebook:** بعد تشغيل خلية التدريب، شغّل الخلية التالية (رسم منحنيات الـ loss والمقاييس). يمكن أيضاً فتح `training_report.md` أو تحميل `training_results.json` لمراجعة النتائج.
+**From Notebook:** After running the training cell, run the next cell (plot loss and metrics curves). You can also open `training_report.md` or load `training_results.json` to review results.
 
 ---
 
-## 📝 محتويات المشروع
+## 📝 Project Contents
 
-### `train_model.py` - سكريبت التدريب الموحد
+### `train_model.py` - Unified training script
 
-هذا الملف يدمج جميع وظائف التدريب في مكان واحد:
+This file consolidates all training functions in one place:
 
-**وظائف بناء النموذج:**
-- `build_model()` - بناء نموذج Mask R-CNN
+**Model building:**
+- `build_model()` - Build Mask R-CNN model
 
-**وظائف التدريب:**
-- `train_one_epoch()` - تدريب epoch واحد
-- `validate_one_epoch()` - التحقق من epoch واحد
-- `main()` - دالة التدريب الرئيسية الكاملة
+**Training:**
+- `train_one_epoch()` - Train one epoch
+- `validate_one_epoch()` - Validate one epoch
+- `main()` - Full training pipeline
 
-**وظائف التقييم:**
-- `evaluate_metrics()` - تقييم المقاييس (COCO metrics)
+**Evaluation:**
+- `evaluate_metrics()` - Evaluate COCO metrics
 
-**وظائف Checkpoints:**
-- `save_checkpoint()` - حفظ checkpoint
-- `load_checkpoint()` - تحميل checkpoint
+**Checkpoints:**
+- `save_checkpoint()` - Save checkpoint
+- `load_checkpoint()` - Load checkpoint
 
-**وظائف Inference:**
-- `run_inference()` - تشغيل inference على صورة واحدة
-- `run_wound_inference()` - inference خاص بحساب مساحة الجرح والعدوى
+**Inference:**
+- `run_inference()` - Run inference on single image
+- `run_wound_inference()` - Wound-specific inference (area + infection)
 
-**وظائف التقارير:**
-- `generate_report()` - توليد تقرير Markdown شامل
-- `review_training_results()` - مراجعة مخرجات تدريب سابق (تحميل training_results.json، طباعة ملخص، ورسم منحنيات)
+**Reports:**
+- `generate_report()` - Generate comprehensive Markdown report
+- `review_training_results()` - Review previous training results (load training_results.json, print summary, plot curves)
 
-### `training_pipeline.ipynb` - Notebook للتدريب
+### `training_pipeline.ipynb` - Training notebook
 
 **Setup & Configuration:**
 - Import libraries
-- CONFIG dictionary - عدّل الإعدادات هنا
+- CONFIG dictionary - Edit settings here
 
 **Data Loading:**
-- تحميل البيانات من `data/splits/` أو `data/augmented/`
-- دعم البيانات المعززة
+- Load data from `data/splits/` or `data/annotations_cleaned.json` (do NOT use old `data/augmented/`)
+- Support for augmented data
 
 **Model Building:**
-- بناء النموذج باستخدام `train_model.build_model()`
-- إعداد Optimizer & Scheduler
+- Build model using `train_model.build_model()`
+- Setup Optimizer & Scheduler
 
 **Training:**
-- حلقة التدريب الكاملة مع تقييم COCO metrics كل epoch
-- حفظ checkpoints تلقائياً (`last.pt`, `best_model.pth`)
-- حفظ `training_results.json` و `training_report.md` في مجلد الـ checkpoints
-- خلية لرسم منحنيات train/val loss والمقاييس بعد انتهاء التدريب
+- Full training loop with COCO metrics evaluation each epoch
+- Auto-save checkpoints (`last.pt`, `best_model.pth`)
+- Save `training_results.json` and `training_report.md` in checkpoints folder
+- Cell to plot train/val loss and metrics after training
 
 **Evaluation & Inference:**
-- تقييم النموذج
-- **Section 6 (Prediction)** يحمّل افتراضياً `best_model.pth` (أفضل نموذج حسب validation loss)
-- يمكن تغيير `INFERENCE_CHECKPOINT` إلى رقم epoch (مثلاً 15) إذا أعطى ذلك نتائج تنبؤ أفضل من best_model.pth (حالة overfitting)
-- التدريب يحفظ `checkpoint_epoch_N.pth` لكل epoch لاختيار epoch يدوياً
-- تشغيل inference على صور جديدة
-- حساب مساحة الجرح وكشف العدوى
+- Evaluate model
+- **Section 6 (Prediction)** loads `best_model.pth` by default (best model by validation loss)
+- You can change `INFERENCE_CHECKPOINT` to an epoch number (e.g. 15) if it gives better predictions than best_model.pth (overfitting case)
+- Training saves `checkpoint_epoch_N.pth` per epoch for manual epoch selection
+- Run inference on new images
+- Compute wound area and detect infection
 
 ---
 
-## ⚙️ التخصيص
+## ⚙️ Customization
 
-### في `train_model.py`:
+### In `train_model.py`:
 
-عدّل `CONFIG` في الملف:
+Edit `CONFIG` in the file:
 
 ```python
 CONFIG = {
+    # Data mode: clean_only | clean_online_aug (recommended) | clean_offline_aug
+    "data_mode": "clean_online_aug",
+    
     # Data paths
     "data_root": "../data",
     "ann_file_train": "../data/splits/train.json",
@@ -304,14 +343,14 @@ CONFIG = {
     "lr": 0.005,
     "image_size": (512, 512),
     
-    # Medical Augmentation
+    # Medical Augmentation (ignored when data_mode="clean_only")
     "use_medical_augmentation": True,
     "preserve_marker": True,
     "intensity": "moderate"  # "light", "moderate", "aggressive"
 }
 ```
 
-### في `training_pipeline.ipynb`:
+### In `training_pipeline.ipynb`:
 
 Current training CONFIG (after fixes applied 2026-02-28):
 
@@ -324,30 +363,30 @@ CONFIG = {
     'early_stop_patience': 15,   # Raised from 7
     'early_stop_min_delta': 0.005,
     # Scheduler: LinearLR warmup (5 epochs) -> CosineAnnealingLR (75 epochs)
-    # Val set: 82/18 split from data/augmented/ (~57 images) instead of 16
+    # Val set: 82/18 split from data/annotations_cleaned.json (~106 val images)
 }
 ```
 
 ---
 
-## 📊 المخرجات
+## 📊 Outputs
 
-### بعد تحضير البيانات:
-- `data/annotations.json` - كل البيانات (COCO format)
-- `data/splits/train.json` - بيانات التدريب
-- `data/splits/val.json` - بيانات التحقق
-- `data/splits/test.json` - بيانات الاختبار
-- `data/augmented/` - البيانات المعززة (اختياري)
+### After data preparation:
+- `data/annotations.json` - All data (COCO format)
+- `data/splits/train.json` - Training data
+- `data/splits/val.json` - Validation data
+- `data/splits/test.json` - Test data
+- `data/augmented_clean/` - Augmented data from cleaned (optional; do NOT use old data/augmented/)
 
-### بعد التدريب:
-- `experiments/maskrcnn/checkpoints/best_model.pth` - أفضل نموذج
-- `experiments/maskrcnn/checkpoints/last.pt` - آخر checkpoint
-- `experiments/maskrcnn/checkpoints/training_results.json` - نتائج التدريب
-- `experiments/maskrcnn/checkpoints/training_report.md` - تقرير شامل
+### After training:
+- `experiments/maskrcnn/checkpoints/best_model.pth` - Best model (by combined_AP50)
+- `experiments/maskrcnn/checkpoints/last_checkpoint.pth` - Last checkpoint (for resume)
+- `experiments/maskrcnn/checkpoints/training_results.json` - Training results
+- `experiments/maskrcnn/checkpoints/training_report.md` - Full report
 
-(غيّر `EXPERIMENT_NAME` في الـ CONFIG أو في `train_model.py` لتجربة أخرى؛ الداتا ست `data/` مشتركة بين كل التجارب.)
+(Change `EXPERIMENT_NAME` in CONFIG or `train_model.py` for another experiment; dataset `data/` is shared across all experiments.)
 
-### بعد Inference:
+### After inference:
 ```json
 {
   "wound_area_cm2": 25.3,
@@ -365,197 +404,198 @@ CONFIG = {
 
 ---
 
-## 🎯 ما يكتشفه النظام
+## 🎯 What the system detects
 
-### العلامات الـ 16:
+### The 16 labels:
 
-1. **AllWound** - كامل الجرح
-2. **Fibrin** - الفيبرين
-3. **SutureZone** - منطقة الخياطة
-4. **EdemaZone** - الوذمة (علامة عدوى) ⚠️
-5. **HyperemiaZone** - الاحتقان (علامة عدوى) ⚠️
-6. **NecrosisZone** - النخر (علامة عدوى) ⚠️
-7. **GranulationZone** - التحبب
-8. **SizeMarker** - علامة القياس (3×3 سم)
-9. وأكثر...
+1. **AllWound** - Entire wound
+2. **Fibrin** - Fibrin
+3. **SutureZone** - Suture zone
+4. **EdemaZone** - Edema (infection sign) ⚠️
+5. **HyperemiaZone** - Hyperemia (infection sign) ⚠️
+6. **NecrosisZone** - Necrosis (infection sign) ⚠️
+7. **GranulationZone** - Granulation
+8. **SizeMarker** - Size marker (3×3 cm)
+9. And more...
 
 ---
 
-## 💡 نصائح
+## 💡 Tips
 
-### إذا واجهت CUDA Out of Memory:
+### If you get CUDA Out of Memory:
 ```python
-# في Part 2، عدّل CONFIG:
+# In Part 2, edit CONFIG:
 CONFIG['batch_size'] = 1
 CONFIG['image_size'] = [800, 800]
 ```
 
-### للتدريب السريع:
+### For quick training:
 ```python
-CONFIG['epochs'] = 10  # بدلاً من 50
+CONFIG['epochs'] = 10  # Instead of 50
 ```
 
-### لمراقبة التدريب:
-راقب الـ output في Notebook - سترى الـ loss ينخفض!
+### To monitor training:
+Watch the output in the Notebook — you'll see the loss decrease!
 
 ---
 
-## 📈 النتائج المتوقعة
+## 📈 Expected results
 
-مع GPU (RTX 4060 أو أفضل):
-- ⏱️ **التدريب**: 4-6 ساعات (50 epochs) على GPU
-- ⏱️ **التدريب على CPU**: 20-30 ساعة (50 epochs) - **غير موصى به**
+With GPU (RTX 4060 or better):
+- ⏱️ **Training**: 4-6 hours (50 epochs) on GPU
+- ⏱️ **Training on CPU**: 20-30 hours (50 epochs) - **not recommended**
 - 🎯 **mAP**: ~70-80%
 - 🔍 **Infection Detection**: ~85%
 
-**⚠️ مهم:** استخدم البيئة `.venv_cuda` للاستفادة من GPU وتقليل وقت التدريب بشكل كبير!
+**⚠️ Important:** Use `.venv_cuda` to leverage GPU and significantly reduce training time!
 
 ---
 
-## 🆘 استكشاف الأخطاء
+## 🆘 Troubleshooting
 
-### ❌ CUDA غير متاح / PyTorch CPU-only
+### ❌ CUDA not available / PyTorch CPU-only
 
-**المشكلة:** PyTorch مثبت بدون دعم CUDA
+**Problem:** PyTorch installed without CUDA support
 
-**الحل:**
-1. تأكد من استخدام البيئة `.venv_cuda` (Python 3.12)
-2. أعد تثبيت PyTorch مع CUDA:
+**Fix:**
+1. Ensure you use `.venv_cuda` (Python 3.12)
+2. Reinstall PyTorch with CUDA:
    ```powershell
    .venv_cuda\Scripts\Activate.ps1
    pip uninstall torch torchvision -y
    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
    ```
-3. تحقق من CUDA:
+3. Verify CUDA:
    ```python
    import torch
-   print(torch.cuda.is_available())  # يجب أن يطبع True
+   print(torch.cuda.is_available())  # Should print True
    ```
 
 ### ❌ ERROR: Unknown compiler / Preparing metadata failed
 
-**المشكلة:** numpy يحاول البناء من المصدر (يتطلب Visual Studio)
+**Problem:** numpy tries to build from source (requires Visual Studio)
 
-**الحل:**
-1. استخدم البيئة `.venv_cuda` (Python 3.12) - تحتوي على wheels جاهزة
-2. أو شغّل: `pip install --only-binary :all: numpy scipy`
+**Fix:**
+1. Use `.venv_cuda` (Python 3.12) - has pre-built wheels
+2. Or run: `pip install --only-binary :all: numpy scipy`
 
 ### ❌ ERROR: Could not install packages - WinError 32
 
-**المشكلة:** pip لا يمكنه الوصول للملفات (مستخدمة من قبل عملية أخرى)
+**Problem:** pip cannot access files (in use by another process)
 
-**الحل:**
-1. **أغلق Jupyter Notebook** إذا كان مفتوحاً
-2. **أغلق جميع نوافذ Terminal**
-3. أعد المحاولة بعد إغلاق جميع العمليات
-4. أو استخدم: `taskkill /F /IM python.exe` ثم أعد المحاولة
+**Fix:**
+1. **Close Jupyter Notebook** if open
+2. **Close all Terminal windows**
+3. Retry after closing all processes
+4. Or use: `taskkill /F /IM python.exe` then retry
 
 ### ❌ ValueError: numpy.dtype size changed
 
-**المشكلة:** تعارض بين numpy و scipy
+**Problem:** Conflict between numpy and scipy
 
-**الحل:**
-1. شغّل **Part 0.5** في Notebook (يصلح المشكلة تلقائياً)
-2. أعد تشغيل Kernel: `Kernel → Restart`
+**Fix:**
+1. Run **Part 0.5** in Notebook (fixes automatically)
+2. Restart Kernel: `Kernel → Restart`
 
-### خطأ في تحميل البيانات؟
-تأكد أن مجلد `data/` يحتوي على:
+### Data loading error?
+Ensure `data/` folder contains:
 - `task_0/`, `task_1/`, ... `task_240/`
 - `project.json`
 
-### الـ loss لا ينخفض؟
-- قلل `learning_rate` إلى 0.0005
-- زد `epochs` إلى 100
-- تأكد من البيانات صحيحة
+### Loss not decreasing?
+- Reduce `learning_rate` to 0.0005
+- Increase `epochs` to 100
+- Ensure data is correct
 
-### النموذج بطيء جداً؟
-- قلل `image_size`
-- قلل `batch_size`
-- استخدم GPU أقوى
+### Model too slow?
+- Reduce `image_size`
+- Reduce `batch_size`
+- Use a stronger GPU
 
 ---
 
-## 📚 المراجع
+## 📚 References
 
 - **Mask R-CNN**: Instance Segmentation
-- **PyTorch**: Framework التدريب
-- **COCO Format**: صيغة البيانات
+- **PyTorch**: Training framework
+- **COCO Format**: Data format
 
 ---
 
-## 👨‍💻 المطور
+## 👨‍💻 Developer
 
-مشروع رسالة ماجستير - كشف العدوى في الجروح الجراحية
-
----
-
-**ملاحظة**: هذا مشروع بحثي. لا تستخدمه للقرارات الطبية الحقيقية دون استشارة طبية!
+Master's thesis project - Infection detection in surgical wounds
 
 ---
 
-## 🎉 خلاصة
+**Note:** This is a research project. Do not use for real medical decisions without medical consultation!
+
+---
+
+## 🎉 Summary
 
 ```
-1 Jupyter Notebook = مشروع كامل
-كل شيء منظم وواضح
-جاهز للاستخدام فوراً
+1 Jupyter Notebook = Complete project
+Everything organized and clear
+Ready to use immediately
 ```
 
-**ابدأ الآن!** 🚀
+**Start now!** 🚀
 
-**الطريقة السريعة (سكريبت Python):**
+**Quick method (Python script):**
 ```powershell
-# تفعيل البيئة
+# Activate environment
 .venv_cuda\Scripts\Activate.ps1
 
-# تشغيل التدريب
-cd notebooks
+# Run training
+cd experiments/maskrcnn
 python train_model.py
 ```
 
-**أو باستخدام Jupyter Notebook:**
+**Or using Jupyter Notebook:**
 ```powershell
-# تفعيل البيئة
+# Activate environment
 .venv_cuda\Scripts\Activate.ps1
 
-# تشغيل Jupyter
-jupyter notebook notebooks/training_pipeline.ipynb
+# Run Jupyter
+cd experiments/maskrcnn
+jupyter notebook training_pipeline.ipynb
 
-# ⚠️ مهم: اختر Kernel → Change Kernel → Python 3.12 (CUDA)
+# ⚠️ Important: Select Kernel → Change Kernel → Python 3.12 (CUDA)
 ```
 
 ---
 
-## 📚 الملفات الرئيسية
+## 📚 Main files
 
-### `notebooks/train_model.py`
-سكريبت Python موحد يحتوي على جميع وظائف التدريب والتقييم والاستدلال. يمكن تشغيله مباشرة أو استيراد دواله في notebooks أخرى.
+### `experiments/maskrcnn/train_model.py`
+Unified Python script with all training, evaluation, and inference functions. Can be run directly or imported from other notebooks.
 
-**الاستخدام:**
+**Usage:**
 ```python
-# تشغيل مباشر
-python notebooks/train_model.py
+# Direct run
+python experiments/maskrcnn/train_model.py
 
-# أو استيراد الدوال
+# Or import functions
 from train_model import build_model, train_one_epoch, evaluate_metrics
 ```
 
-### `notebooks/pipeline_utils.py`
-دوال معالجة البيانات وإنشاء datasets:
-- `create_dataset()` - إنشاء PyTorch Dataset
-- `make_dataloaders()` - إنشاء DataLoaders
-- `get_transforms()` - تحويلات الصور
+### `experiments/maskrcnn/pipeline_utils.py`
+Data processing and dataset creation:
+- `create_dataset()` - Create PyTorch Dataset
+- `make_dataloaders()` - Create DataLoaders
+- `get_transforms()` - Image transforms
 - `WoundDataset` - Dataset class
 
 ### `scripts/apply_augmentation_only.py`
-سكريبت لتطبيق augmentation على البيانات وحفظها:
+Script to apply augmentation to data and save:
 ```bash
 cd scripts
 python apply_augmentation_only.py
 ```
 
 ### `docs/DATA_AUGMENTATION_GUIDE.md`
-دليل شامل لاستراتيجية augmentation الطبية.
+Comprehensive guide for medical augmentation strategy.
 
-### `notebooks/INFERENCE_GUIDE.md`
-دليل استخدام وظائف inference والتحليل.
+### `experiments/maskrcnn/INFERENCE_GUIDE.md` (if exists)
+Guide for inference usage and analysis.

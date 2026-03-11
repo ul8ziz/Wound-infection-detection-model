@@ -3,13 +3,17 @@
 This folder contains the **code and outputs** for the Mask R-CNN wound detection experiment.
 
 - **Code:** `training_pipeline.ipynb`, `train_model.py`, `pipeline_utils.py`, `augmentation_strategy.py`
-- **Outputs:** `checkpoints/` (models, training_results.json, training_report.md), `results/` (inference JSONs)
+- **Outputs:** `checkpoints/` (best_model.pth, last_checkpoint.pth, training_results.json, training_report.md), `results/` (inference JSONs)
 - **Data:** Shared at `../../data` (not copied here)
 
-Run from this directory:
-- Jupyter: open `training_pipeline.ipynb` (kernel cwd = this folder)
-- CLI: `python train_model.py`
-- Review: `python train_model.py --review checkpoints`
+## Training (primary: Notebook)
+
+**Recommended:** Use `training_pipeline.ipynb` — open from this folder, set Kernel cwd to `experiments/maskrcnn`, run cells in order. Edit CONFIG (Part 2) for `data_mode`, `batch_size`, etc.
+
+**Alternative CLI:**
+- `python train_model.py` (default: clean_online_aug)
+- `python train_model.py --data-mode clean_offline_aug`
+- `python train_model.py --review checkpoints`
 
 ---
 
@@ -23,15 +27,16 @@ Run from this directory:
 | `early_stop_patience` | 15 | Raised from 7 to not stop during cosine decay |
 | `early_stop_min_delta` | 0.005 | Raised from 0.001 |
 | Scheduler | LinearLR warmup (5 ep) → CosineAnnealingLR (75 ep) | Replaced StepLR(step_size=10, gamma=0.1) |
-| Validation set | ~57 images (82/18 split of augmented data) | Raised from 16 (too small for COCO AP) |
+| Validation set | ~106 images (82/18 split of annotations_cleaned.json) | Raised from 16 (too small for COCO AP) |
 | `image_size` | 1024×1024 | |
 | `num_classes` | 9 | background + 8 wound classes (set from dataset; do not use len(coco_json['categories'])+1) |
 
 ## Pre-retraining checklist
 
 - **num_classes:** The code uses `train_dataset.num_classes` (filtered/remapped classes). Do not build the model with `len(coco_json['categories'])+1` or you will get head/label mismatch and near-zero AP.
-- **Old checkpoints:** If you previously trained with the wrong num_classes (e.g. from raw COCO categories), delete `checkpoints/best_model.pth`, `checkpoints/last.pt`, and `checkpoints/checkpoint_epoch_*.pth` before retraining, or training will fail or behave incorrectly.
+- **Old checkpoints:** If you previously trained with the wrong num_classes (e.g. from raw COCO categories), delete `checkpoints/best_model.pth` and `checkpoints/last_checkpoint.pth` before retraining, or training will fail or behave incorrectly.
 - **Startup report:** When you start training, confirm the printed "Model num_classes" and "Dataset num_classes" match, and "Unique labels in sampled batches" are within [1, num_classes-1].
+- **Checkpoint strategy:** Best model is selected by `combined_AP50` (not loss). See [docs/MODEL_SELECTION_AND_CHECKPOINTS.md](../../docs/MODEL_SELECTION_AND_CHECKPOINTS.md).
 - **Validation:** If the new label validation fails, fix the dataset or class mapping in `pipeline_utils.py` before training.
 
 ## Root Causes Fixed (2026-02-28)
@@ -42,7 +47,7 @@ Four root causes were identified that caused 0.0 AP across all epochs and zero d
 
 2. **Early stopping triggered by LR drop, not overfitting**: Best epoch was 10 (exactly when LR dropped), patience=7 → stopped at epoch 17/50. The model was underfitting, not overfitting. Fixed: `patience=15`, `min_delta=0.005`, `epochs=80`.
 
-3. **Validation set too small (16 images)**: `pycocotools` COCO AP evaluator requires ~50+ images to register non-zero AP; 16 images always yields 0.0. Fixed: split `data/augmented/annotations_augmented.json` 82/18 to get ~259 train / ~57 val images.
+3. **Validation set too small (16 images)**: `pycocotools` COCO AP evaluator requires ~50+ images to register non-zero AP; 16 images always yields 0.0. Fixed: split `data/annotations_cleaned.json` 82/18 to get ~424 train / ~106 val images. (Old `data/augmented/` was contaminated - do not use.)
 
 4. **Deprecated `pretrained=True` API**: Fixed to `weights=MaskRCNN_ResNet50_FPN_Weights.DEFAULT`.
 

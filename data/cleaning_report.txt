@@ -1,0 +1,25 @@
+=== Dataset Cleaning Report ===
+Input: ../data
+Target classes: 8
+
+Before cleaning:
+  Images: 530
+  Annotations: 11338
+  Classes in data: ['ВсяРана', 'Вторичная пигментация', 'Глубины раны', 'Гнойное отделяемое', 'Зона гиперемии вокруг', 'Зона грануляций', 'Зона некроза', 'Зона отека вокруг раны', 'Зона шва', 'Металлоконструкция', 'Метка для размерности', 'Подкожная жир.кл. без грануляций', 'Сухожилие', 'Фасция без грануляций', 'Фибрин']
+
+Removed:
+  - Non-target classes: 4724 annotations
+  - Empty segmentation: 0
+  - Invalid polygon: 0
+  - Zero-area mask: 0
+  - Invalid bbox: 0
+  - Outside image (unrepairable): 278
+  - Tiny object (area ratio): 0
+
+After cleaning:
+  Images: 530
+  Annotations: 6336
+  Images dropped (zero valid anns): 0
+  Classes: 8 (IDs 1-8)
+
+Output: E:\GitHub\Wound-infection-detection-model\data\annotations_cleaned.json

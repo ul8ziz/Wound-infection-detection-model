@@ -279,9 +279,8 @@ def get_medical_augmentation_pipeline(
                 clip_limit=3.0,
                 tile_grid_size=(8, 8),
                 p=0.4
-            ),
-            # Channel shuffle (very aggressive, use sparingly)
-            A.ChannelShuffle(p=0.1)
+            )
+            # ChannelShuffle removed: medically unsafe (destroys tissue color semantics)
         ])
     
     # ========================================================================
@@ -296,7 +295,8 @@ def get_medical_augmentation_pipeline(
         ToTensorV2()
     ])
     
-    # Compose with bbox and mask parameters
+    # Compose with bbox and mask parameters.
+    # Pass masks=masks (list of HxW arrays); geometric transforms apply to all masks.
     return A.Compose(
         transforms,
         bbox_params=A.BboxParams(
@@ -304,7 +304,7 @@ def get_medical_augmentation_pipeline(
             label_fields=['labels'],
             min_visibility=0.1  # Filter out boxes that become too small
         ),
-        additional_targets={'mask': 'mask'}  # Support multiple masks
+        additional_targets={'mask': 'mask'}  # For optional extra mask targets
     )
 
 

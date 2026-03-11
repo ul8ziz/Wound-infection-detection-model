@@ -5,15 +5,19 @@ Data Augmentation Script (Standalone)
 This script applies data augmentation to the dataset and saves the augmented images
 and annotations. It runs ONCE to generate augmented data that can be used for training.
 
-The training itself is done in: notebooks/1.8.2025/fixed_training_pipeline.ipynb
+Inputs:
+    - data/annotations_cleaned.json (required; run clean_dataset.py first)
+    - Original images under data_root (paths from annotations)
+
+Outputs:
+    - data/augmented_clean/images/ — augmented (and original) images
+    - data/augmented_clean/annotations_augmented_clean.json — COCO annotations
 
 Usage:
     cd scripts
     python apply_augmentation_only.py
 
-Output:
-    - Augmented images saved to: ../data/augmented/images/
-    - New annotations file: ../data/augmented/annotations_augmented.json
+Full documentation: docs/AUGMENTED_CLEAN.md
 """
 
 import sys
@@ -46,12 +50,12 @@ import torch
 CONFIG = {
     # Input paths (relative to project root, not script location)
     "data_root": "../data",  # Original data root (data/ in project root)
-    "annotation_file": "../data/splits/train.json",  # Training annotations (data/splits/train.json)
+    "annotation_file": "../data/annotations_cleaned.json",  # Prefer cleaned; fallback: data/splits/train.json
     
-    # Output paths
-    "output_root": "../data/augmented",  # Where to save augmented data (inside data/)
+    # Output paths (use augmented_clean when source is annotations_cleaned.json to avoid contamination)
+    "output_root": "../data/augmented_clean",  # Prefer augmented_clean; old data/augmented/ may be contaminated
     "output_images_dir": "images",  # Augmented images directory (relative to output_root)
-    "output_annotations": "annotations_augmented.json",  # New annotations file (relative to output_root)
+    "output_annotations": "annotations_augmented_clean.json",  # New annotations file (relative to output_root)
     
     # Augmentation settings
     "augmentations_per_image": 3,  # How many augmented versions per original image
@@ -325,6 +329,12 @@ def main():
     project_root = script_dir.parent  # Go up from scripts/ to project root
     data_root = (project_root / CONFIG["data_root"].lstrip("../")).resolve()
     annotation_file = (project_root / CONFIG["annotation_file"].lstrip("../")).resolve()
+    # Enforce cleaned annotations only - no fallback to splits (avoids contamination)
+    if not annotation_file.exists():
+        raise FileNotFoundError(
+            f"Cleaned annotations not found: {annotation_file}. "
+            "Run clean_dataset.py first. Do NOT use pre-cleaning splits."
+        )
     
     output_root = (project_root / CONFIG["output_root"].lstrip("../")).resolve()
     output_images_dir = output_root / CONFIG["output_images_dir"]
@@ -371,8 +381,6 @@ def main():
             min_height=CONFIG["image_size"][0],
             min_width=CONFIG["image_size"][1],
             border_mode=cv2.BORDER_CONSTANT,
-            fill_value=0,
-            mask_fill_value=0,
             p=1.0
         )
     )
@@ -386,8 +394,6 @@ def main():
                 limit=10,
                 interpolation=cv2.INTER_LINEAR,
                 border_mode=cv2.BORDER_CONSTANT,
-                fill_value=0,
-                mask_fill_value=0,
                 p=0.5
             )
         )
@@ -399,8 +405,6 @@ def main():
                 shear=(-3, 3),
                 interpolation=cv2.INTER_LINEAR,
                 border_mode=cv2.BORDER_CONSTANT,
-                fill_value=0,
-                mask_fill_value=0,
                 p=0.4
             )
         )
@@ -412,8 +416,6 @@ def main():
                 limit=15,
                 interpolation=cv2.INTER_LINEAR,
                 border_mode=cv2.BORDER_CONSTANT,
-                fill_value=0,
-                mask_fill_value=0,
                 p=0.5
             )
         )
@@ -425,8 +427,6 @@ def main():
                 shear=(-5, 5),
                 interpolation=cv2.INTER_LINEAR,
                 border_mode=cv2.BORDER_CONSTANT,
-                fill_value=0,
-                mask_fill_value=0,
                 p=0.5
             )
         )
@@ -546,10 +546,8 @@ def main():
     print(f"Augmented annotations saved to: {output_annotations_path}")
     print(f"Augmented images saved to: {output_images_dir}")
     print()
-    print("You can now use the augmented data in your training notebook:")
-    print("  notebooks/1.8.2025/fixed_training_pipeline.ipynb")
-    print()
-    print(f"Update the annotation file path to: {output_annotations_path}")
+    print("Use augmented data by setting data_mode='clean_offline_aug' in CONFIG")
+    print("  (training_pipeline.ipynb or train_model.py --data-mode clean_offline_aug)")
 
 if __name__ == "__main__":
     import torch
