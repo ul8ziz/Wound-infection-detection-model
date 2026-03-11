@@ -274,7 +274,9 @@ python train_model.py --review ../experiments/maskrcnn/checkpoints --no-plot
 
 **Evaluation & Inference:**
 - تقييم النموذج
-- **Section 6 (Prediction)** يحمّل افتراضياً `best_model.pth` (أفضل نموذج حسب validation loss؛ راجع `training_results.json` لمعرفة best_epoch و best_metric)
+- **Section 6 (Prediction)** يحمّل افتراضياً `best_model.pth` (أفضل نموذج حسب validation loss)
+- يمكن تغيير `INFERENCE_CHECKPOINT` إلى رقم epoch (مثلاً 15) إذا أعطى ذلك نتائج تنبؤ أفضل من best_model.pth (حالة overfitting)
+- التدريب يحفظ `checkpoint_epoch_N.pth` لكل epoch لاختيار epoch يدوياً
 - تشغيل inference على صور جديدة
 - حساب مساحة الجرح وكشف العدوى
 
