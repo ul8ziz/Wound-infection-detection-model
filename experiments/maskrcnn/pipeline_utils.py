@@ -151,7 +151,10 @@ class WoundDataset(Dataset):
                 except ValueError:
                     continue
         
-        self.num_classes = len(TARGET_CLASSES_NAMES) + 1 # +1 for background
+        # Single source of truth for model head size: background (0) + len(TARGET_CLASSES_NAMES).
+        # Model must use this num_classes; using len(coco_json['categories'])+1 causes head/label mismatch and near-zero AP.
+        self.num_classes = len(TARGET_CLASSES_NAMES) + 1  # +1 for background
+        self.target_class_names = list(TARGET_CLASSES_NAMES)
         print(f"Total classes for training: {self.num_classes} (including background)")
 
         self.ids = list(self.images.keys())

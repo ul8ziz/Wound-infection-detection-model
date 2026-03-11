@@ -92,15 +92,16 @@ if (scripts_dir / "augmentation_strategy.py").exists():
 # Import pipeline utils
 try:
     from pipeline_utils import (
-        set_seed, 
-        get_device, 
-        create_dataset, 
-        make_dataloaders
+        set_seed,
+        get_device,
+        create_dataset,
+        make_dataloaders,
+        TARGET_CLASSES_NAMES,
     )
 except ImportError:
     # Fallback for CLI usage depending on where it's run
     sys.path.append(str(current_dir))
-    from pipeline_utils import get_device, create_dataset, make_dataloaders, set_seed
+    from pipeline_utils import get_device, create_dataset, make_dataloaders, set_seed, TARGET_CLASSES_NAMES
 
 # ============================================================================
 # Model Building Functions
@@ -134,6 +135,45 @@ def build_model(num_classes: int, hidden_layer: int = 256, pretrained_backbone: 
     )
 
     return model
+
+
+def validate_dataset_labels(
+    train_loader: torch.utils.data.DataLoader,
+    num_classes: int,
+    num_batches: int = 5,
+) -> List[int]:
+    """
+    Validates that all labels in sampled batches are in [1, num_classes - 1].
+    Mask R-CNN uses 0 for background; dataset targets are 1-based foreground only.
+    Raises ValueError if any label is out of range (would exceed classifier head capacity).
+    Returns list of unique labels seen for the startup report.
+    """
+    all_labels: List[int] = []
+    batches_checked = 0
+    for batch in train_loader:
+        _, targets = batch
+        for target in targets:
+            if "labels" in target:
+                labels = target["labels"].tolist()
+                all_labels.extend(labels)
+        batches_checked += 1
+        if batches_checked >= num_batches:
+            break
+    unique = sorted(set(all_labels))
+    if batches_checked > 0 and len(all_labels) == 0:
+        raise ValueError(
+            "No labels found in sampled batches. Check dataset annotations and class_mapping."
+        )
+    min_label = 1
+    max_label = num_classes - 1
+    for label in unique:
+        if label < min_label or label > max_label:
+            raise ValueError(
+                f"Dataset label {label} is out of range [1, num_classes-1]=[1, {max_label}]. "
+                f"Model head has num_classes={num_classes}. Fix dataset class_mapping or use dataset.num_classes for model build."
+            )
+    return unique
+
 
 # ============================================================================
 # Training Functions
@@ -1060,23 +1100,52 @@ def main():
     print("Building Model")
     print("=" * 80)
     
-    if hasattr(train_dataset, 'coco_json'):
-        num_classes = len(train_dataset.coco_json['categories']) + 1
-    elif hasattr(train_dataset, 'coco'):
-        if isinstance(train_dataset.coco, dict):
-            num_classes = len(train_dataset.coco['categories']) + 1
-        else:
-            num_classes = len(train_dataset.coco.loadCats(train_dataset.coco.getCatIds())) + 1
+    # Root cause fix: Dataset filters to TARGET_CLASSES_NAMES and remaps to 1..K.
+    # dataset.num_classes is K+1 (background). Using len(coco_json['categories'])+1
+    # would use the full category list and cause head/label mismatch and near-zero AP.
+    base_dataset = train_dataset.dataset if isinstance(train_dataset, torch.utils.data.Subset) else train_dataset
+    if hasattr(base_dataset, 'num_classes'):
+        num_classes = base_dataset.num_classes
     else:
-        num_classes = 17  # Default fallback
-        print(f"[WARNING] Could not determine num_classes, using default: {num_classes}")
+        if hasattr(base_dataset, 'coco_json'):
+            num_classes = len(base_dataset.coco_json['categories']) + 1
+        elif hasattr(base_dataset, 'coco'):
+            if isinstance(base_dataset.coco, dict):
+                num_classes = len(base_dataset.coco['categories']) + 1
+            else:
+                num_classes = len(base_dataset.coco.loadCats(base_dataset.coco.getCatIds())) + 1
+        else:
+            num_classes = 17
+        print(f"[WARNING] Dataset has no num_classes; using len(categories)+1={num_classes}. If you use class filtering, pass dataset.num_classes instead.")
     
     print(f"Number of classes (including background): {num_classes}")
     
     model = build_model(num_classes=num_classes, pretrained_backbone=True)
     model.to(device)
     print(f"[OK] Model created and moved to {device}")
+    
+    # Startup debug report
     print()
+    print("--- Startup report (num_classes / labels) ---")
+    print(f"  Model num_classes:    {num_classes}")
+    print(f"  Dataset num_classes:  {getattr(base_dataset, 'num_classes', 'N/A')}")
+    class_names = getattr(base_dataset, 'target_class_names', TARGET_CLASSES_NAMES)
+    if class_names:
+        print(f"  Target class names:   {class_names}")
+    unique_labels = validate_dataset_labels(train_loader, num_classes, num_batches=5)
+    print(f"  Unique labels in sampled batches: {unique_labels}")
+    if unique_labels:
+        print(f"  Min label in sampled targets: {min(unique_labels)}")
+        print(f"  Max label in sampled targets: {max(unique_labels)}")
+    print("----------------------------------------------")
+    print()
+    
+    # Incompatible checkpoints warning
+    _ckpt_dir = script_dir / CONFIG["output_dir"]
+    if _ckpt_dir.exists() and (list(_ckpt_dir.glob("*.pth")) or list(_ckpt_dir.glob("*.pt"))):
+        print("[WARNING] If you changed the number of classes (e.g. from raw COCO categories to dataset.num_classes), "
+              "delete existing checkpoints (best_model.pth, last.pt, checkpoint_epoch_*.pth) or training will fail or behave incorrectly.")
+        print()
     
     # Optimizer and scheduler
     params = [p for p in model.parameters() if p.requires_grad]
@@ -1528,19 +1597,43 @@ def run_training_cli():
 
     train_loader, val_loader = make_dataloaders(train_dataset, val_dataset, batch_size=args.batch_size)
     
-    # Model
-    base_dataset = train_dataset
-    if isinstance(train_dataset, torch.utils.data.Subset):
-        base_dataset = train_dataset.dataset
-
-    if hasattr(base_dataset, 'coco_json'):
-        num_classes = len(base_dataset.coco_json['categories']) + 1
+    # Model: use dataset.num_classes so head matches filtered/remapped labels (root cause fix).
+    base_dataset = train_dataset.dataset if isinstance(train_dataset, torch.utils.data.Subset) else train_dataset
+    if hasattr(base_dataset, 'num_classes'):
+        num_classes = base_dataset.num_classes
     else:
-        num_classes = len(base_dataset.coco['categories']) + 1
+        if hasattr(base_dataset, 'coco_json'):
+            num_classes = len(base_dataset.coco_json['categories']) + 1
+        else:
+            num_classes = len(base_dataset.coco['categories']) + 1
+        print(f"[WARNING] Dataset has no num_classes; using len(categories)+1={num_classes}")
     print(f"Detected {num_classes-1} classes + background")
     
     model = build_model(num_classes)
     model.to(device)
+    
+    # Startup report (same as main training path)
+    print()
+    print("--- Startup report (num_classes / labels) ---")
+    print(f"  Model num_classes:    {num_classes}")
+    print(f"  Dataset num_classes:  {getattr(base_dataset, 'num_classes', 'N/A')}")
+    class_names = getattr(base_dataset, 'target_class_names', TARGET_CLASSES_NAMES)
+    if class_names:
+        print(f"  Target class names:   {class_names}")
+    unique_labels = validate_dataset_labels(train_loader, num_classes, num_batches=5)
+    print(f"  Unique labels in sampled batches: {unique_labels}")
+    if unique_labels:
+        print(f"  Min label in sampled targets: {min(unique_labels)}")
+        print(f"  Max label in sampled targets: {max(unique_labels)}")
+    print("----------------------------------------------")
+    print()
+    
+    # Incompatible checkpoints warning (same as main path)
+    _ckpt_dir = Path(args.output_dir)
+    if _ckpt_dir.exists() and (list(_ckpt_dir.glob("*.pth")) or list(_ckpt_dir.glob("*.pt"))):
+        print("[WARNING] If you changed the number of classes (e.g. from raw COCO categories to dataset.num_classes), "
+              "delete existing checkpoints (best_model.pth, last.pt, checkpoint_epoch_*.pth) or training will fail or behave incorrectly.")
+        print()
     
     # Optimizer
     params = [p for p in model.parameters() if p.requires_grad]
