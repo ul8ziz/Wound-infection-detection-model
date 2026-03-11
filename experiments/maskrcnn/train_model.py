@@ -1031,9 +1031,9 @@ CONFIG = {
     "lr": 0.005,
     "image_size": (512, 512),
 
-    # Early stopping (based on combined_AP50; higher is better)
-    "early_stop_patience": 7,
-    "early_stop_min_delta": 0.001,
+    # Early stopping: monitor=combined_AP50, mode=max. No loss-based logic.
+    "early_stop_patience": 12,
+    "early_stop_min_delta": 0.003,
 
     # Checkpoint: save debug checkpoint every N epochs (0 = disabled)
     "save_checkpoint_every_n_epochs": 0,
@@ -1329,8 +1329,8 @@ def main():
             print(f"Train Loss: {train_stats['total_loss']:.4f} | Val Loss: {val_stats['total_loss']:.4f}")
             print(f"combined_AP50: {combined_AP50:.4f} | bbox_AP50: {bbox_AP50:.4f} | segm_AP50: {segm_AP50:.4f}")
 
-            # Best model selection: higher combined_AP50 is better
-            is_best = combined_AP50 > (best_combined_AP50 + early_stop_min_delta)
+            # Best model: save on any improvement. Early stop: no save for patience epochs.
+            is_best = combined_AP50 > best_combined_AP50
             if is_best:
                 best_combined_AP50 = combined_AP50
                 best_epoch = epoch + 1
@@ -1752,8 +1752,8 @@ def run_training_cli():
     lr_scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
     
     best_combined_AP50 = 0.0
-    early_stop_patience = 7
-    early_stop_min_delta = 0.001
+    early_stop_patience = CONFIG.get("early_stop_patience", 12)
+    early_stop_min_delta = CONFIG.get("early_stop_min_delta", 0.003)
     epochs_without_improve = 0
     base_dataset = train_dataset.dataset if isinstance(train_dataset, torch.utils.data.Subset) else train_dataset
     class_mapping = getattr(base_dataset, "class_mapping", {})
@@ -1786,7 +1786,8 @@ def run_training_cli():
         segm_AP50 = metrics.get("segm_AP50", bbox_AP50)
         metrics["val_loss"] = val_loss_dict["total_loss"]
         
-        is_best = combined_AP50 > (best_combined_AP50 + early_stop_min_delta)
+        # Best model: save on any improvement. Early stop: no save for patience epochs.
+        is_best = combined_AP50 > best_combined_AP50
         if is_best:
             best_combined_AP50 = combined_AP50
             epochs_without_improve = 0

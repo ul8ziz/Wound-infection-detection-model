@@ -2,6 +2,8 @@
 
 This document explains the checkpoint strategy for the wound detection training pipeline, including why we use validation metrics instead of loss, how best and last checkpoints work, and how to use them.
 
+For early stopping behavior (monitor, patience, min_delta), see [MODEL_SELECTION_AND_EARLY_STOPPING.md](MODEL_SELECTION_AND_EARLY_STOPPING.md).
+
 ---
 
 ## 1. Why Saving Every Epoch Is Not Ideal

@@ -243,7 +243,7 @@ After training (from Notebook or `train_model.py` script), outputs are saved in 
 | File | Description |
 |-------|--------|
 | `last.pt` | Last checkpoint (for resuming or comparison) |
-| `best_model.pth` | Best model by validation loss |
+| `best_model.pth` | Best model by combined_AP50 (AP-based, not loss) |
 | `training_results.json` | Training config, train/val loss per epoch, COCO metrics (bbox_AP50, segm_AP50), best epoch |
 | `training_report.md` | Markdown report: config, loss/metric tables, loss improvement analysis |
 
@@ -310,7 +310,7 @@ This file consolidates all training functions in one place:
 
 **Evaluation & Inference:**
 - Evaluate model
-- **Section 6 (Prediction)** loads `best_model.pth` by default (best model by validation loss)
+- **Section 6 (Prediction)** loads `best_model.pth` by default (best model by combined_AP50)
 - You can change `INFERENCE_CHECKPOINT` to an epoch number (e.g. 15) if it gives better predictions than best_model.pth (overfitting case)
 - Training saves `checkpoint_epoch_N.pth` per epoch for manual epoch selection
 - Run inference on new images
