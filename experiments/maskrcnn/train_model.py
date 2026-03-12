@@ -1,0 +1,1907 @@
+"""
+Training Script for Mask R-CNN Wound Detection and Measurement Model
+=====================================================================
+
+This file combines all training functions in one place:
+- Model building
+- Model training
+- Model evaluation
+- Checkpoint saving/loading
+- Inference
+- Report generation
+
+Usage:
+    python train_model.py
+"""
+
+import os
+import sys
+import math
+import time
+import json
+import argparse
+from pathlib import Path
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple, Union
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import numpy as np
+import cv2
+
+import torchvision
+from torchvision.models.detection import maskrcnn_resnet50_fpn
+from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
+from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
+
+# Try importing pycocotools
+try:
+    from pycocotools.coco import COCO
+    from pycocotools.cocoeval import COCOeval
+    import pycocotools.mask as mask_util
+    HAS_COCO = True
+except ImportError:
+    HAS_COCO = False
+    mask_util = None
+
+# Fix encoding for Windows (only if not in Jupyter/IPython)
+if sys.platform == 'win32':
+    # Check if running in Jupyter/IPython
+    try:
+        from IPython import get_ipython
+        in_jupyter = get_ipython() is not None
+    except ImportError:
+        in_jupyter = False
+    
+    # Only reconfigure if not in Jupyter (Jupyter handles encoding automatically)
+    if not in_jupyter:
+        try:
+            # Check if stdout has reconfigure method (Python 3.7+)
+            if hasattr(sys.stdout, 'reconfigure'):
+                sys.stdout.reconfigure(encoding='utf-8')
+                sys.stderr.reconfigure(encoding='utf-8')
+            elif hasattr(sys.stdout, 'buffer'):
+                # Python < 3.7 or TextIOWrapper
+                import io
+                sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+                sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+        except (AttributeError, OSError):
+            # If reconfiguration fails, continue without it
+            # Jupyter/IPython will handle encoding
+            pass
+
+# Add current directory to path for imports
+current_dir = Path(__file__).parent
+sys.path.insert(0, str(current_dir))
+
+# Also add scripts directory for augmentation_strategy
+project_root = current_dir.parent
+scripts_dir = project_root / "scripts"
+if (scripts_dir / "augmentation_strategy.py").exists():
+    sys.path.insert(0, str(scripts_dir))
+
+# Import pipeline utils
+try:
+    from pipeline_utils import (
+        set_seed,
+        get_device,
+        create_dataset,
+        make_dataloaders,
+        TARGET_CLASSES_NAMES,
+    )
+except ImportError:
+    # Fallback for CLI usage depending on where it's run
+    sys.path.append(str(current_dir))
+    from pipeline_utils import get_device, create_dataset, make_dataloaders, set_seed, TARGET_CLASSES_NAMES
+
+# ============================================================================
+# Model Building Functions
+# ============================================================================
+
+def build_model(num_classes: int, hidden_layer: int = 256, pretrained_backbone: bool = True):
+    """
+    Builds the Mask R-CNN model with a ResNet-50-FPN backbone.
+    
+    Args:
+        num_classes (int): Number of classes (including background).
+        hidden_layer (int): Size of the mask predictor hidden layer.
+        pretrained_backbone (bool): Whether to use pretrained backbone weights.
+    
+    Returns:
+        torch.nn.Module: Mask R-CNN model
+    """
+    weights = "DEFAULT" if pretrained_backbone else None
+    model = maskrcnn_resnet50_fpn(weights=weights)
+
+    # 1. Replace the box predictor
+    in_features = model.roi_heads.box_predictor.cls_score.in_features
+    model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+
+    # 2. Replace the mask predictor
+    in_features_mask = model.roi_heads.mask_predictor.conv5_mask.in_channels
+    model.roi_heads.mask_predictor = MaskRCNNPredictor(
+        in_features_mask,
+        hidden_layer,
+        num_classes
+    )
+
+    return model
+
+
+def validate_dataset_labels(
+    train_loader: torch.utils.data.DataLoader,
+    num_classes: int,
+    num_batches: int = 5,
+) -> List[int]:
+    """
+    Validates that all labels in sampled batches are in [1, num_classes - 1].
+    Mask R-CNN uses 0 for background; dataset targets are 1-based foreground only.
+    Raises ValueError if any label is out of range (would exceed classifier head capacity).
+    Returns list of unique labels seen for the startup report.
+    """
+    all_labels: List[int] = []
+    batches_checked = 0
+    for batch in train_loader:
+        _, targets = batch
+        for target in targets:
+            if "labels" in target:
+                labels = target["labels"].tolist()
+                all_labels.extend(labels)
+        batches_checked += 1
+        if batches_checked >= num_batches:
+            break
+    unique = sorted(set(all_labels))
+    if batches_checked > 0 and len(all_labels) == 0:
+        raise ValueError(
+            "No labels found in sampled batches. Check dataset annotations and class_mapping."
+        )
+    min_label = 1
+    max_label = num_classes - 1
+    for label in unique:
+        if label < min_label or label > max_label:
+            raise ValueError(
+                f"Dataset label {label} is out of range [1, num_classes-1]=[1, {max_label}]. "
+                f"Model head has num_classes={num_classes}. Fix dataset class_mapping or use dataset.num_classes for model build."
+            )
+    return unique
+
+
+# ============================================================================
+# Training Functions
+# ============================================================================
+
+def _is_valid_target(target: Dict) -> bool:
+    boxes = target.get("boxes")
+    if boxes is None or boxes.numel() == 0:
+        return False
+    if boxes.ndim != 2 or boxes.shape[1] != 4:
+        return False
+    if (boxes[:, 2] <= boxes[:, 0]).any() or (boxes[:, 3] <= boxes[:, 1]).any():
+        return False
+    
+    # Check consistency
+    labels = target.get("labels")
+    if labels is not None and len(boxes) != len(labels):
+        return False
+        
+    masks = target.get("masks")
+    if masks is not None:
+        if masks.numel() == 0 or masks.sum().item() <= 0:
+            return False
+        if len(boxes) != len(masks):
+            return False
+            
+    return True
+
+
+def _filter_valid_batch(
+    images: List[torch.Tensor],
+    targets: List[Dict],
+) -> Tuple[List[torch.Tensor], List[Dict]]:
+    valid_images = []
+    valid_targets = []
+    for image, target in zip(images, targets):
+        if _is_valid_target(target):
+            valid_images.append(image)
+            valid_targets.append(target)
+    return valid_images, valid_targets
+
+
+def train_one_epoch(
+    model: nn.Module, 
+    optimizer: torch.optim.Optimizer, 
+    data_loader: torch.utils.data.DataLoader, 
+    device: torch.device, 
+    epoch: int, 
+    print_freq: int = 10,
+    scaler: Optional[torch.cuda.amp.GradScaler] = None,
+    scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
+    scheduler_step_per_iter: bool = False,
+    max_norm: float = 1.0,
+    loss_clip_max: Optional[float] = None,
+    loss_skip_threshold: Optional[float] = None,
+    skip_invalid_targets: bool = True
+) -> Dict[str, float]:
+    """
+    Trains the model for one epoch.
+    
+    Returns:
+        Dict[str, float]: Averaged losses dictionary
+    """
+    model.train()
+    metric_logger = {}
+    
+    header = f'Epoch: [{epoch}]'
+    
+    total_loss_accum = 0.0
+    num_batches = len(data_loader)
+    valid_batches = 0
+    skipped_batches = 0
+    
+    for i, (images, targets) in enumerate(data_loader):
+        images = list(image.to(device) for image in images)
+        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+        if skip_invalid_targets:
+            images, targets = _filter_valid_batch(images, targets)
+            if len(images) == 0:
+                skipped_batches += 1
+                # if i % print_freq == 0:
+                #     print(f"{header} [{i}/{num_batches}] Skipping batch with invalid targets")
+                continue
+
+        # Optimizer zero_grad
+        optimizer.zero_grad(set_to_none=True)
+
+        # Forward pass
+        if scaler is not None:
+            with torch.cuda.amp.autocast():
+                loss_dict = model(images, targets)
+                losses = sum(loss for loss in loss_dict.values())
+        else:
+            loss_dict = model(images, targets)
+            losses = sum(loss for loss in loss_dict.values())
+
+        loss_value = losses.item()
+
+        if not math.isfinite(loss_value):
+            # print(f"Loss is {loss_value}, skipping batch")
+            skipped_batches += 1
+            continue
+        if loss_skip_threshold is not None and loss_value > loss_skip_threshold:
+            # print(f"⚠️  High loss spike ({loss_value:.2f}), skipping batch")
+            skipped_batches += 1
+            continue
+        if loss_clip_max is not None:
+            losses = torch.clamp(losses, max=loss_clip_max)
+            loss_value = losses.item()
+
+        # Backward pass
+        if scaler is not None:
+            scaler.scale(losses).backward()
+            if max_norm > 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            losses.backward()
+            if max_norm > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+            optimizer.step()
+
+        # Scheduler stepping: only if explicitly requested per-iteration
+        if scheduler is not None and scheduler_step_per_iter:
+            scheduler.step()
+
+        # Update logs
+        total_loss_accum += loss_value
+        valid_batches += 1
+        for k, v in loss_dict.items():
+            if k not in metric_logger:
+                metric_logger[k] = 0.0
+            metric_logger[k] += v.item()
+
+        if i % print_freq == 0:
+            print(f"{header} [{i}/{num_batches}] Loss: {loss_value:.4f}")
+
+    # Average losses
+    avg_loss = total_loss_accum / max(1, valid_batches)
+    avg_components = {k: v / max(1, valid_batches) for k, v in metric_logger.items()}
+    avg_components['total_loss'] = avg_loss
+    avg_components['skipped_batches'] = skipped_batches
+    
+    return avg_components
+
+@torch.no_grad()
+def validate_one_epoch(
+    model: nn.Module, 
+    data_loader: torch.utils.data.DataLoader, 
+    device: torch.device,
+    track_predictions: bool = False,
+    loss_clip_max: Optional[float] = None,
+    loss_skip_threshold: Optional[float] = None,
+    skip_invalid_targets: bool = True
+) -> Dict[str, float]:
+    """
+    Computes validation LOSS (not metrics).
+    Note: Torchvision detection models compute loss only in train() mode.
+    We use train() mode with torch.no_grad() to get loss dict without gradients.
+    For metrics evaluation, use evaluate_metrics() which runs in eval() mode.
+    
+    Args:
+        track_predictions: If True, also run model in eval() mode to track prediction scores
+    
+    Returns:
+        Dict[str, float]: Validation losses dictionary
+    """
+    model.train() 
+    
+    total_loss_accum = 0.0
+    metric_logger = {}
+    num_batches = len(data_loader)
+    valid_batches = 0
+    skipped_batches = 0
+    
+    # Track prediction scores if requested
+    all_scores = []
+    predictions_per_thresh = {0.3: 0, 0.5: 0, 0.7: 0}
+    
+    for images, targets in data_loader:
+        images = list(image.to(device) for image in images)
+        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+        if skip_invalid_targets:
+            images, targets = _filter_valid_batch(images, targets)
+            if len(images) == 0:
+                skipped_batches += 1
+                continue
+
+        loss_dict = model(images, targets)
+        losses = sum(loss for loss in loss_dict.values())
+
+        loss_value = losses.item()
+        if not math.isfinite(loss_value):
+            skipped_batches += 1
+            continue
+        if loss_skip_threshold is not None and loss_value > loss_skip_threshold:
+            skipped_batches += 1
+            continue
+        if loss_clip_max is not None:
+            losses = torch.clamp(losses, max=loss_clip_max)
+            loss_value = losses.item()
+        total_loss_accum += loss_value
+        valid_batches += 1
+        
+        for k, v in loss_dict.items():
+            if k not in metric_logger:
+                metric_logger[k] = 0.0
+            metric_logger[k] += v.item()
+        
+        # Track predictions if requested
+        if track_predictions:
+            model.eval()
+            with torch.no_grad():
+                outputs = model(images)
+                for output in outputs:
+                    scores = output['scores'].cpu().numpy()
+                    all_scores.extend(scores.tolist())
+                    for thresh in predictions_per_thresh:
+                        predictions_per_thresh[thresh] += np.sum(scores >= thresh)
+            model.train()
+
+    avg_loss = total_loss_accum / max(1, valid_batches)
+    avg_components = {k: v / max(1, valid_batches) for k, v in metric_logger.items()}
+    avg_components['total_loss'] = avg_loss
+    avg_components['skipped_batches'] = skipped_batches
+    
+    if track_predictions and len(all_scores) > 0:
+        avg_components['pred_mean_score'] = float(np.mean(all_scores))
+        avg_components['pred_median_score'] = float(np.median(all_scores))
+        avg_components['pred_max_score'] = float(np.max(all_scores))
+        avg_components['pred_min_score'] = float(np.min(all_scores))
+        for thresh, count in predictions_per_thresh.items():
+            avg_components[f'pred_at_thresh_{thresh}'] = count
+    
+    return avg_components
+
+# ============================================================================
+# Evaluation Functions
+# ============================================================================
+
+@torch.no_grad()
+def evaluate_metrics(
+    model: nn.Module, 
+    data_loader: torch.utils.data.DataLoader, 
+    device: torch.device
+):
+    """
+    Evaluates model using COCO metrics (if available) or fallback custom metrics.
+    Returns both bbox and segmentation metrics for Mask R-CNN.
+    
+    Returns:
+        Dict: Metrics dictionary with AP scores
+    """
+    model.eval()
+    cpu_device = torch.device("cpu")
+    
+    dataset = data_loader.dataset
+    if isinstance(dataset, torch.utils.data.Subset):
+        dataset = dataset.dataset
+
+    if hasattr(dataset, 'coco') and HAS_COCO and hasattr(dataset, 'ann_file'):
+        print("Using COCO evaluator...")
+        coco_gt = dataset.coco
+
+        # Build inverse class mapping: remapped model IDs (1-8) → original CVAT category IDs.
+        # The model outputs labels in the remapped range (1-8) defined by WoundDataset.class_mapping,
+        # but coco_gt was loaded from the original annotation JSON which has the original CVAT IDs
+        # (e.g. 0, 1, 4, 5, 6, 7, 8, 15). Without this inversion, every prediction has the wrong
+        # category_id in the COCO evaluator → AP = 0 for all epochs.
+        inv_class_mapping: dict = {}
+        if hasattr(dataset, 'class_mapping') and dataset.class_mapping:
+            inv_class_mapping = {v: k for k, v in dataset.class_mapping.items()}
+
+        coco_results_bbox = []
+        coco_results_segm = []
+        _debug_logged = False  # Log once per evaluation
+
+        for images, targets in data_loader:
+            images = list(img.to(device) for img in images)
+            outputs = model(images)
+            
+            outputs = [{k: v.to(cpu_device) for k, v in t.items()} for t in outputs]
+            
+            for idx, (target, output) in enumerate(zip(targets, outputs)):
+                image_id = target["image_id"].item()
+                
+                # Get original image dimensions from COCO (GT is in original coords)
+                img_info = coco_gt.loadImgs(image_id)
+                if not img_info:
+                    continue
+                img_info = img_info[0]
+                orig_h = img_info["height"]
+                orig_w = img_info["width"]
+                
+                # Get prediction-space dimensions from the input image tensor
+                _, pred_h, pred_w = images[idx].shape
+                scale_x = orig_w / pred_w
+                scale_y = orig_h / pred_h
+                
+                boxes = output["boxes"].tolist()
+                scores = output["scores"].tolist()
+                labels = output["labels"].tolist()
+                
+                # Process masks if available
+                has_masks = "masks" in output and len(output["masks"]) > 0
+                masks_np = None
+                if has_masks:
+                    masks = output["masks"]
+                    masks_binary = (masks > 0.5).squeeze(1).byte()
+                    masks_np = masks_binary.numpy()
+                
+                for i, box in enumerate(boxes):
+                    x1, y1, x2, y2 = box
+                    w = max(0, x2 - x1)
+                    h = max(0, y2 - y1)
+                    x = x1
+                    y = y1
+                    
+                    # Scale bbox from prediction space to original image space
+                    x_orig = x * scale_x
+                    y_orig = y * scale_y
+                    w_orig = w * scale_x
+                    h_orig = h * scale_y
+                    
+                    res_bbox = {
+                        "image_id": image_id,
+                        "category_id": inv_class_mapping.get(int(labels[i]), int(labels[i])),
+                        "bbox": [x_orig, y_orig, w_orig, h_orig],
+                        "score": float(scores[i])
+                    }
+                    coco_results_bbox.append(res_bbox)
+                    
+                    # Add segmentation if masks available
+                    if has_masks and i < len(masks_np):
+                        mask = masks_np[i]
+                        if mask.dtype != np.uint8:
+                            mask = mask.astype(np.uint8)
+                        # Resize mask to original image dimensions (COCO expects RLE size = image size)
+                        if mask.shape[0] != orig_h or mask.shape[1] != orig_w:
+                            mask = cv2.resize(
+                                mask, (orig_w, orig_h),
+                                interpolation=cv2.INTER_NEAREST
+                            )
+                        rle = mask_util.encode(np.asfortranarray(mask))
+                        if isinstance(rle['counts'], bytes):
+                            rle['counts'] = rle['counts'].decode('utf-8')
+                        
+                        # Debug logging (once per evaluation)
+                        if not _debug_logged:
+                            print(
+                                f"[COCO eval] pred_mask=({pred_h},{pred_w}) "
+                                f"orig_image=({orig_h},{orig_w}) "
+                                f"rle_size={rle.get('size', 'N/A')} "
+                                f"segm_count={len(coco_results_segm)+1} "
+                                f"bbox_count={len(coco_results_bbox)}"
+                            )
+                            _debug_logged = True
+                        
+                        res_segm = res_bbox.copy()
+                        res_segm["segmentation"] = rle
+                        coco_results_segm.append(res_segm)
+        
+        # Debug: log final counts
+        print(f"[COCO eval] Total: bbox={len(coco_results_bbox)} segm={len(coco_results_segm)}")
+        
+        if not coco_results_bbox:
+            print("⚠️  No predictions generated (all scores below threshold or no detections).")
+            return {"bbox_AP": 0.0, "bbox_AP50": 0.0, "bbox_AP75": 0.0, "combined_AP50": 0.0}
+        
+        try:
+            # Fix missing 'info' field in COCO dataset if needed
+            try:
+                if hasattr(coco_gt, 'dataset') and isinstance(coco_gt.dataset, dict):
+                    if 'info' not in coco_gt.dataset:
+                        coco_gt.dataset['info'] = {
+                            "description": "Wound Infection Detection Dataset",
+                            "version": "1.0",
+                            "year": 2025
+                        }
+            except (AttributeError, TypeError):
+                pass
+            
+            # Evaluate bbox metrics
+            coco_dt_bbox = coco_gt.loadRes(coco_results_bbox)
+            coco_eval_bbox = COCOeval(coco_gt, coco_dt_bbox, "bbox")
+            coco_eval_bbox.evaluate()
+            coco_eval_bbox.accumulate()
+            coco_eval_bbox.summarize()
+            
+            metrics = {
+                "bbox_AP": coco_eval_bbox.stats[0],
+                "bbox_AP50": coco_eval_bbox.stats[1],
+                "bbox_AP75": coco_eval_bbox.stats[2]
+            }
+            
+            # Evaluate segmentation metrics if masks available
+            if coco_results_segm:
+                coco_dt_segm = coco_gt.loadRes(coco_results_segm)
+                coco_eval_segm = COCOeval(coco_gt, coco_dt_segm, "segm")
+                coco_eval_segm.evaluate()
+                coco_eval_segm.accumulate()
+                coco_eval_segm.summarize()
+                
+                metrics.update({
+                    "segm_AP": coco_eval_segm.stats[0],
+                    "segm_AP50": coco_eval_segm.stats[1],
+                    "segm_AP75": coco_eval_segm.stats[2]
+                })
+                
+                metrics["combined_AP50"] = (metrics["bbox_AP50"] + metrics["segm_AP50"]) / 2.0
+            else:
+                metrics["combined_AP50"] = metrics["bbox_AP50"]
+            
+            return metrics
+            
+        except Exception as e:
+            print(f"COCO eval failed: {type(e).__name__}: {e}")
+            print("Falling back to custom metrics.")
+    
+    # Fallback Custom Metrics
+    print("Running fallback metrics (Precision/Recall @ IoU 0.5)...")
+    tp = 0
+    fp = 0
+    fn = 0
+    
+    iou_threshold = 0.5
+    total_raw_predictions = 0
+    total_filtered_predictions = 0
+    all_raw_scores = []
+    
+    for images, targets in data_loader:
+        images = list(img.to(device) for img in images)
+        outputs = model(images)
+        outputs = [{k: v.to(cpu_device) for k, v in t.items()} for t in outputs]
+        
+        for target, output in zip(targets, outputs):
+            gt_boxes = target["boxes"]
+            pred_boxes = output["boxes"]
+            pred_scores = output["scores"]
+            
+            total_raw_predictions += len(pred_scores)
+            if len(pred_scores) > 0:
+                all_raw_scores.extend(pred_scores.tolist())
+            
+            keep = pred_scores > 0.5
+            pred_boxes_filtered = pred_boxes[keep]
+            total_filtered_predictions += len(pred_boxes_filtered)
+            
+            if len(gt_boxes) == 0:
+                fp += len(pred_boxes_filtered)
+                continue
+            
+            if len(pred_boxes_filtered) == 0:
+                fn += len(gt_boxes)
+                continue
+                
+            # Compute IoU matrix
+            box_area = lambda boxes: (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+            area1 = box_area(gt_boxes)
+            area2 = box_area(pred_boxes_filtered)
+            
+            lt = torch.max(gt_boxes[:, None, :2], pred_boxes_filtered[:, :2])
+            rb = torch.min(gt_boxes[:, None, 2:], pred_boxes_filtered[:, 2:])
+            wh = (rb - lt).clamp(min=0)
+            inter = wh[:, :, 0] * wh[:, :, 1]
+            
+            union = area1[:, None] + area2 - inter
+            iou = inter / union
+            
+            matched_gt = torch.zeros(len(gt_boxes), dtype=torch.bool)
+            matched_pred = torch.zeros(len(pred_boxes_filtered), dtype=torch.bool)
+            
+            for i in range(len(gt_boxes)):
+                max_iou, max_idx = iou[i].max(dim=0)
+                if max_iou > iou_threshold:
+                    if not matched_pred[max_idx]:
+                        matched_gt[i] = True
+                        matched_pred[max_idx] = True
+                        tp += 1
+            
+            fn += len(gt_boxes) - matched_gt.sum().item()
+            fp += len(pred_boxes_filtered) - matched_pred.sum().item()
+
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0
+    
+    print(f"Precision: {precision:.4f}, Recall: {recall:.4f}, F1: {f1:.4f}")
+    if len(all_raw_scores) > 0:
+        print(f"  Raw predictions: {total_raw_predictions}, Filtered (score>0.5): {total_filtered_predictions}")
+        print(f"  Score stats: min={min(all_raw_scores):.3f}, max={max(all_raw_scores):.3f}, mean={np.mean(all_raw_scores):.3f}")
+    else:
+        print(f"  ⚠️  No raw predictions generated - model may need more training")
+    
+    return {
+        "precision": precision, 
+        "recall": recall, 
+        "f1": f1,
+        "bbox_AP50": f1,
+        "combined_AP50": f1,
+        "raw_predictions_count": total_raw_predictions,
+        "filtered_predictions_count": total_filtered_predictions
+    }
+
+# ============================================================================
+# Checkpoint Functions
+# ============================================================================
+
+def save_best_checkpoint(
+    model: nn.Module,
+    epoch: int,
+    best_combined_AP50: float,
+    bbox_AP50: float,
+    segm_AP50: float,
+    config: Dict,
+    class_mapping: Optional[Dict] = None,
+    output_dir: Union[str, Path] = None,
+    filename: str = "best_model.pth"
+):
+    """
+    Save best model for inference. Best model is selected by combined_AP50.
+    
+    Args:
+        model: Model to save
+        epoch: Epoch number
+        best_combined_AP50: Best combined AP50 value
+        bbox_AP50: Bbox AP50 at best epoch
+        segm_AP50: Segmentation AP50 at best epoch
+        config: Training configuration
+        class_mapping: Optional class mapping from dataset
+        output_dir: Directory to save
+        filename: Filename (default: best_model.pth)
+    """
+    state = {
+        "model": model.state_dict(),
+        "model_state_dict": model.state_dict(),  # Alias for clarity
+        "epoch": epoch,
+        "best_combined_AP50": best_combined_AP50,
+        "bbox_AP50": bbox_AP50,
+        "segm_AP50": segm_AP50,
+        "config": config,
+        "class_mapping": class_mapping or {},
+    }
+    out = Path(output_dir) if output_dir else Path(".")
+    out.mkdir(parents=True, exist_ok=True)
+    save_path = out / filename
+    torch.save(state, save_path)
+    print(f"  → Best model saved: {save_path} (epoch {epoch}, combined_AP50={best_combined_AP50:.4f})")
+
+
+def save_last_checkpoint(
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    scheduler: Optional[torch.optim.lr_scheduler._LRScheduler],
+    epoch: int,
+    metrics: Dict,
+    output_dir: Path,
+    filename: str = "last_checkpoint.pth",
+    scaler: Optional[object] = None
+):
+    """
+    Save last checkpoint for training resume. Overwritten every epoch.
+    
+    Args:
+        model: Model to save
+        optimizer: Optimizer state
+        scheduler: Scheduler state (or None)
+        epoch: Current epoch
+        metrics: Latest validation metrics (e.g. combined_AP50, bbox_AP50, segm_AP50, val_loss)
+        output_dir: Directory to save
+        filename: Filename (default: last_checkpoint.pth)
+        scaler: Optional GradScaler for AMP
+    """
+    out = Path(output_dir) if output_dir else Path(".")
+    out.mkdir(parents=True, exist_ok=True)
+    save_path = out / filename
+    state = {
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict() if scheduler else None,
+        "scaler": scaler.state_dict() if scaler is not None and hasattr(scaler, "state_dict") else None,
+        "epoch": epoch,
+        "metrics": metrics,
+    }
+    torch.save(state, save_path)
+    print(f"  → Last checkpoint saved: {save_path} (epoch {epoch})")
+
+def load_checkpoint(
+    model: nn.Module, 
+    path: str, 
+    optimizer: Optional[torch.optim.Optimizer] = None, 
+    scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
+    scaler: Optional[object] = None
+) -> Dict:
+    """
+    Load checkpoint from file. Supports both best_model.pth and last_checkpoint.pth formats.
+    
+    Args:
+        model: Model to load state into
+        path: Path to checkpoint file
+        optimizer: Optional optimizer to load state into (for resume)
+        scheduler: Optional scheduler to load state into (for resume)
+        scaler: Optional GradScaler to load state into (for AMP resume)
+    
+    Returns:
+        Dict: Checkpoint dictionary
+    """
+    # For PyTorch 2.6+, we need to handle numpy scalars specially
+    numpy_scalar = None
+    try:
+        numpy_scalar = np._core.multiarray.scalar
+    except AttributeError:
+        try:
+            numpy_scalar = np.core.multiarray.scalar
+        except AttributeError:
+            pass
+    
+    # Add numpy scalar to safe globals BEFORE any torch.load call (PyTorch 2.6+)
+    if numpy_scalar is not None:
+        if hasattr(torch.serialization, 'add_safe_globals'):
+            try:
+                torch.serialization.add_safe_globals([numpy_scalar])
+            except Exception:
+                pass
+    
+    # Try to load with safe_globals context manager first (if available)
+    checkpoint = None
+    load_success = False
+    
+    if numpy_scalar is not None and hasattr(torch.serialization, 'safe_globals'):
+        try:
+            with torch.serialization.safe_globals([numpy_scalar]):
+                checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+            load_success = True
+        except Exception:
+            pass
+    
+    # Fallback: use weights_only=False (now that numpy_scalar is in safe globals)
+    if not load_success:
+        checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    
+    # Load model state (support both "model" and "model_state_dict" keys)
+    model_state = checkpoint.get("model") or checkpoint.get("model_state_dict")
+    if model_state is None:
+        raise KeyError(f"Checkpoint missing 'model' or 'model_state_dict' key: {path}")
+    model.load_state_dict(model_state)
+    
+    if optimizer and "optimizer" in checkpoint and checkpoint["optimizer"] is not None:
+        optimizer.load_state_dict(checkpoint["optimizer"])
+    if scheduler and "scheduler" in checkpoint and checkpoint["scheduler"] is not None:
+        scheduler.load_state_dict(checkpoint["scheduler"])
+    if scaler and "scaler" in checkpoint and checkpoint["scaler"] is not None and hasattr(scaler, "load_state_dict"):
+        scaler.load_state_dict(checkpoint["scaler"])
+    return checkpoint
+
+# ============================================================================
+# Inference Functions
+# ============================================================================
+
+@torch.no_grad()
+def run_inference(
+    model: nn.Module,
+    image: Union[torch.Tensor, np.ndarray, str],
+    device: torch.device,
+    conf_thresh: float = 0.5
+) -> Dict:
+    """
+    Run inference on a single image.
+    
+    Args:
+        model: Trained Mask R-CNN model
+        image: Image as tensor [C, H, W], numpy array [H, W, C], or path to image file
+        device: torch device
+        conf_thresh: Confidence threshold for filtering predictions
+        
+    Returns:
+        Dictionary with filtered and raw predictions
+    """
+    import cv2
+    from albumentations import Compose, Resize, Normalize
+    from albumentations.pytorch import ToTensorV2
+    
+    model.eval()
+    
+    # Load and preprocess image
+    if isinstance(image, str):
+        img = cv2.imread(image)
+        if img is None:
+            raise ValueError(f"Could not load image: {image}")
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    elif isinstance(image, Path):
+        img = cv2.imread(str(image))
+        if img is None:
+            raise ValueError(f"Could not load image: {image}")
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    elif isinstance(image, np.ndarray):
+        img = image
+        if len(img.shape) == 3 and img.shape[2] == 3:
+            pass  # Already RGB
+        else:
+            raise ValueError(f"Expected RGB image, got shape: {img.shape}")
+    elif isinstance(image, torch.Tensor):
+        if image.dim() == 3:
+            img = image.permute(1, 2, 0).cpu().numpy()
+            mean = np.array([0.485, 0.456, 0.406])
+            std = np.array([0.229, 0.224, 0.225])
+            img = img * std + mean
+            img = np.clip(img, 0, 1)
+            img = (img * 255).astype(np.uint8)
+        else:
+            raise ValueError(f"Expected 3D tensor [C, H, W], got shape: {image.shape}")
+    else:
+        raise TypeError(f"Unsupported image type: {type(image)}")
+    
+    # Resize and normalize
+    transform = Compose([
+        Resize(height=512, width=512),
+        Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ToTensorV2()
+    ])
+    transformed = transform(image=img)
+    img_tensor = transformed['image'].unsqueeze(0).to(device)
+    
+    # Run inference
+    outputs = model(img_tensor)
+    output = outputs[0]  # Single image
+    
+    # Extract raw predictions
+    raw_boxes = output['boxes'].cpu().numpy()
+    raw_scores = output['scores'].cpu().numpy()
+    raw_labels = output['labels'].cpu().numpy()
+    raw_masks = output['masks'].cpu().numpy() if 'masks' in output else None
+    
+    # Filter by confidence
+    keep = raw_scores >= conf_thresh
+    filtered_boxes = raw_boxes[keep]
+    filtered_scores = raw_scores[keep]
+    filtered_labels = raw_labels[keep]
+    filtered_masks = raw_masks[keep] if raw_masks is not None else None
+    
+    return {
+        'filtered': {
+            'boxes': filtered_boxes,
+            'scores': filtered_scores,
+            'labels': filtered_labels,
+            'masks': filtered_masks
+        },
+        'raw': {
+            'boxes': raw_boxes,
+            'scores': raw_scores,
+            'labels': raw_labels,
+            'masks': raw_masks
+        },
+        'num_detections': len(filtered_boxes),
+        'num_raw': len(raw_boxes),
+        'conf_thresh': conf_thresh
+    }
+
+def run_wound_inference(
+    model: nn.Module,
+    image: Union[torch.Tensor, np.ndarray, str],
+    device: torch.device,
+    conf_thresh: float = 0.3,
+    wound_class_ids: List[int] = None,
+    infection_class_ids: List[int] = None,
+    marker_class_id: int = None,
+    marker_size_cm2: float = 9.0  # 3x3 cm = 9 cm²
+) -> Dict:
+    """
+    Run inference and compute wound area and infection indicators.
+    
+    Args:
+        model: Trained Mask R-CNN model
+        image: Image as tensor, numpy array, or path
+        device: torch device
+        conf_thresh: Confidence threshold
+        wound_class_ids: List of class IDs for wound regions
+        infection_class_ids: List of class IDs for infection indicators
+        marker_class_id: Class ID for the reference marker
+        marker_size_cm2: Physical size of marker in cm² (default 3x3 cm = 9 cm²)
+        
+    Returns:
+        Dictionary with wound area, infection flags, and detections
+    """
+    # Run inference
+    result = run_inference(model, image, device, conf_thresh)
+    
+    filtered = result['filtered']
+    boxes = filtered['boxes']
+    scores = filtered['scores']
+    labels = filtered['labels']
+    masks = filtered['masks']
+    
+    # Get image dimensions (assuming 512x512 after resize)
+    img_h, img_w = 512, 512
+    image_area_pixels = img_h * img_w
+    
+    # Find marker
+    marker_found = False
+    marker_area_pixels = None
+    pixel_to_cm2_ratio = None
+    
+    if marker_class_id is not None:
+        marker_indices = np.where(labels == marker_class_id)[0]
+        if len(marker_indices) > 0:
+            marker_idx = marker_indices[np.argmax(scores[marker_indices])]
+            marker_found = True
+            
+            if masks is not None:
+                marker_mask = masks[marker_idx, 0]
+                marker_area_pixels = np.sum(marker_mask > 0.5)
+            else:
+                x1, y1, x2, y2 = boxes[marker_idx]
+                marker_area_pixels = (x2 - x1) * (y2 - y1)
+            
+            if marker_area_pixels > 0:
+                pixel_to_cm2_ratio = marker_size_cm2 / marker_area_pixels
+    
+    # Compute wound area
+    wound_area_pixels = 0.0
+    wound_area_cm2 = None
+    
+    if wound_class_ids is not None:
+        wound_indices = np.where(np.isin(labels, wound_class_ids))[0]
+        if len(wound_indices) > 0 and masks is not None:
+            for idx in wound_indices:
+                wound_mask = masks[idx, 0]
+                wound_area_pixels += np.sum(wound_mask > 0.5)
+            
+            if marker_found and pixel_to_cm2_ratio is not None:
+                wound_area_cm2 = wound_area_pixels * pixel_to_cm2_ratio
+    
+    wound_area_ratio = wound_area_pixels / image_area_pixels if image_area_pixels > 0 else 0.0
+    
+    # Check for infection indicators
+    infection_flags = {}
+    if infection_class_ids is not None:
+        for inf_class_id in infection_class_ids:
+            inf_indices = np.where(labels == inf_class_id)[0]
+            detected = len(inf_indices) > 0
+            max_score = float(np.max(scores[inf_indices])) if detected else 0.0
+            infection_flags[inf_class_id] = {
+                'detected': detected,
+                'max_score': max_score,
+                'count': len(inf_indices)
+            }
+    
+    # Create detections list
+    detections = []
+    for i in range(len(boxes)):
+        detections.append({
+            'class_id': int(labels[i]),
+            'score': float(scores[i]),
+            'box': boxes[i].tolist(),
+            'has_mask': masks is not None and masks[i] is not None
+        })
+    
+    return {
+        'wound_area_cm2': wound_area_cm2,
+        'wound_area_pixels': float(wound_area_pixels),
+        'wound_area_ratio': wound_area_ratio,
+        'marker_found': marker_found,
+        'marker_area_pixels': float(marker_area_pixels) if marker_area_pixels is not None else None,
+        'pixel_to_cm2_ratio': pixel_to_cm2_ratio,
+        'infection_flags': infection_flags,
+        'num_detections': len(boxes),
+        'detections': detections,
+        'raw_stats': {
+            'num_raw': result['num_raw'],
+            'num_filtered': result['num_detections'],
+            'conf_thresh': conf_thresh
+        }
+    }
+
+# ============================================================================
+# Configuration
+# ============================================================================
+# Run from experiments/maskrcnn/: data is at ../../data; outputs in ./checkpoints and ./results.
+EXPERIMENTS_ROOT = "."
+EXPERIMENT_NAME = "maskrcnn"
+
+CONFIG = {
+    # Data paths (shared; project root)
+    # DATA_MODE: clean_only | clean_online_aug | clean_offline_aug
+    # - clean_only: annotations_cleaned/splits, use_medical_augmentation=False
+    # - clean_online_aug: annotations_cleaned/splits + online augmentation (recommended)
+    # - clean_offline_aug: data/augmented_clean/ (run apply_augmentation_only.py from cleaned first)
+    "data_mode": "clean_online_aug",
+    "data_root": "../../data",  # From experiments/maskrcnn/ -> project data/
+    "ann_file_train": "../../data/splits/train.json",
+    "ann_file_val": "../../data/splits/val.json",
+    "ann_file_full": "../../data/annotations.json",
+    "ann_file_cleaned": "../../data/annotations_cleaned.json",  # Prefer over ann_file_full when splits missing
+    "ann_file_offline_aug": "../../data/augmented_clean/annotations_augmented_clean.json",  # Mode 3 only
+    
+    # Training settings
+    "output_dir": "checkpoints",  # This folder (experiments/maskrcnn/checkpoints)
+    "seed": 42,
+    "batch_size": 4,
+    "num_workers": 0,  # Set to 0 for Windows compatibility
+    "epochs": 50,
+    "lr": 0.005,
+    "image_size": (512, 512),
+
+    # Early stopping: monitor=combined_AP50, mode=max. No loss-based logic.
+    "early_stop_patience": 12,
+    "early_stop_min_delta": 0.003,
+
+    # Checkpoint: save debug checkpoint every N epochs (0 = disabled)
+    "save_checkpoint_every_n_epochs": 0,
+
+    # Training stability
+    "loss_clip_max": 100.0,
+    "loss_skip_threshold": 1000.0,
+    "skip_invalid_targets": True,
+    
+    # Device: use GPU (CUDA) when available for faster training
+    "device_prefer_cuda": True,
+
+    # Medical Augmentation Strategy Settings
+    "use_medical_augmentation": True,  # Enable comprehensive medical augmentation
+    "preserve_marker": True,           # Preserve marker geometry (critical for area measurements)
+    "intensity": "moderate"            # Augmentation intensity: "light", "moderate", "aggressive"
+}
+
+# ============================================================================
+# Main Training Function
+# ============================================================================
+
+def main():
+    """Main training function."""
+    
+    print("=" * 80)
+    print("Medical Augmentation Training Script")
+    print("=" * 80)
+    print(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print()
+    
+    # Setup: use GPU (CUDA) for training when available
+    set_seed(CONFIG["seed"])
+    device = get_device(CONFIG.get("device_prefer_cuda", True))
+    print(f"PyTorch version: {torch.__version__}")
+    print(f"CUDA available: {torch.cuda.is_available()}")
+    if device.type == "cuda":
+        print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+    else:
+        print("Using device: CPU (GPU not available; install PyTorch with CUDA for GPU training)")
+    print(f"Device: {device}")
+    print()
+    
+    # Resolve paths relative to script location
+    script_dir = Path(__file__).parent
+    train_ann = (script_dir / CONFIG["ann_file_train"]).resolve()
+    val_ann = (script_dir / CONFIG["ann_file_val"]).resolve()
+    ann_full = (script_dir / CONFIG["ann_file_full"]).resolve()
+    ann_cleaned = (script_dir / CONFIG["ann_file_cleaned"]).resolve()
+    ann_offline_aug = (script_dir / CONFIG["ann_file_offline_aug"]).resolve()
+    data_root = (script_dir / CONFIG["data_root"]).resolve()
+    aug_clean_root = (script_dir / "../../data/augmented_clean").resolve()
+    
+    # DATA_MODE: clean_only | clean_online_aug | clean_offline_aug
+    # OLD data/augmented/ is contaminated (from pre-cleaning) - do NOT use
+    data_mode = CONFIG.get("data_mode", "clean_online_aug")
+    
+    # Resolve train/val annotation files and roots per mode
+    use_medical_aug = CONFIG["use_medical_augmentation"]
+    if data_mode == "clean_only":
+        use_medical_aug = False
+        if not train_ann.exists() and ann_cleaned.exists():
+            train_ann = ann_cleaned
+            val_ann = ann_cleaned
+        elif not train_ann.exists():
+            train_ann = ann_full
+            val_ann = ann_full
+        train_root = val_root = data_root
+    elif data_mode == "clean_online_aug":
+        if not train_ann.exists() and ann_cleaned.exists():
+            train_ann = ann_cleaned
+            val_ann = ann_cleaned
+        elif not train_ann.exists():
+            train_ann = ann_full
+            val_ann = ann_full
+        train_root = val_root = data_root
+    elif data_mode == "clean_offline_aug":
+        if not ann_offline_aug.exists():
+            raise FileNotFoundError(
+                f"Offline augmented data not found: {ann_offline_aug}. "
+                "Run: cd scripts && python apply_augmentation_only.py"
+            )
+        train_ann = ann_offline_aug
+        train_root = aug_clean_root
+        if not val_ann.exists() and ann_cleaned.exists():
+            val_ann = ann_cleaned
+        val_root = data_root
+    else:
+        raise ValueError(f"Unknown data_mode: {data_mode}")
+    
+    # Create datasets
+    print("=" * 80)
+    print("Loading Datasets")
+    print("=" * 80)
+    print(f"Data mode: {data_mode}")
+    print(f"Train annotations: {train_ann}")
+    print(f"Train root: {train_root}")
+    print(f"Val annotations: {val_ann}")
+    print(f"Val root: {val_root}")
+    print()
+    print(f"Medical Augmentation: {use_medical_aug}")
+    print(f"Preserve Marker: {CONFIG['preserve_marker']}")
+    print(f"Intensity: {CONFIG['intensity']}")
+    print()
+    
+    try:
+        train_dataset = create_dataset(
+            root=str(train_root),
+            annotation_file=str(train_ann),
+            train=True,
+            image_size=CONFIG["image_size"],
+            use_medical_augmentation=use_medical_aug,
+            preserve_marker=CONFIG["preserve_marker"],
+            intensity=CONFIG["intensity"]
+        )
+        
+        val_dataset = create_dataset(
+            root=str(val_root),
+            annotation_file=str(val_ann),
+            train=False,
+            image_size=CONFIG["image_size"],
+            use_medical_augmentation=False,
+            preserve_marker=CONFIG["preserve_marker"],
+            intensity=CONFIG["intensity"]
+        )
+        
+        print(f"[OK] Train dataset loaded: {len(train_dataset)} samples")
+        print(f"[OK] Val dataset loaded: {len(val_dataset)} samples")
+        
+    except Exception as e:
+        print(f"[ERROR] Error loading datasets: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+    
+    # Create data loaders
+    print()
+    print("Creating data loaders...")
+    train_loader, val_loader = make_dataloaders(
+        train_dataset, 
+        val_dataset,
+        batch_size=CONFIG["batch_size"],
+        num_workers=CONFIG["num_workers"]
+    )
+    print(f"[OK] Train batches: {len(train_loader)}")
+    print(f"[OK] Val batches: {len(val_loader)}")
+    print()
+    
+    # Build model
+    print("=" * 80)
+    print("Building Model")
+    print("=" * 80)
+    
+    # Root cause fix: Dataset filters to TARGET_CLASSES_NAMES and remaps to 1..K.
+    # dataset.num_classes is K+1 (background). Using len(coco_json['categories'])+1
+    # would use the full category list and cause head/label mismatch and near-zero AP.
+    base_dataset = train_dataset.dataset if isinstance(train_dataset, torch.utils.data.Subset) else train_dataset
+    if hasattr(base_dataset, 'num_classes'):
+        num_classes = base_dataset.num_classes
+    else:
+        if hasattr(base_dataset, 'coco_json'):
+            num_classes = len(base_dataset.coco_json['categories']) + 1
+        elif hasattr(base_dataset, 'coco'):
+            if isinstance(base_dataset.coco, dict):
+                num_classes = len(base_dataset.coco['categories']) + 1
+            else:
+                num_classes = len(base_dataset.coco.loadCats(base_dataset.coco.getCatIds())) + 1
+        else:
+            num_classes = 17
+        print(f"[WARNING] Dataset has no num_classes; using len(categories)+1={num_classes}. If you use class filtering, pass dataset.num_classes instead.")
+    
+    print(f"Number of classes (including background): {num_classes}")
+    
+    model = build_model(num_classes=num_classes, pretrained_backbone=True)
+    model.to(device)
+    print(f"[OK] Model created and moved to {device}")
+    
+    # Startup debug report
+    print()
+    print("--- Startup report (num_classes / labels) ---")
+    print(f"  Model num_classes:    {num_classes}")
+    print(f"  Dataset num_classes:  {getattr(base_dataset, 'num_classes', 'N/A')}")
+    class_names = getattr(base_dataset, 'target_class_names', TARGET_CLASSES_NAMES)
+    if class_names:
+        print(f"  Target class names:   {class_names}")
+    unique_labels = validate_dataset_labels(train_loader, num_classes, num_batches=5)
+    print(f"  Unique labels in sampled batches: {unique_labels}")
+    if unique_labels:
+        print(f"  Min label in sampled targets: {min(unique_labels)}")
+        print(f"  Max label in sampled targets: {max(unique_labels)}")
+    print("----------------------------------------------")
+    print()
+    
+    # Incompatible checkpoints warning
+    _ckpt_dir = script_dir / CONFIG["output_dir"]
+    if _ckpt_dir.exists() and (list(_ckpt_dir.glob("*.pth")) or list(_ckpt_dir.glob("*.pt"))):
+        print("[WARNING] If you changed the number of classes (e.g. from raw COCO categories to dataset.num_classes), "
+              "delete existing checkpoints (best_model.pth, last_checkpoint.pth) or training will fail or behave incorrectly.")
+        print()
+    
+    # Optimizer and scheduler
+    params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = optim.SGD(params, lr=CONFIG["lr"], momentum=0.9, weight_decay=0.0005)
+    lr_scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
+    
+    print(f"Optimizer: SGD (lr={CONFIG['lr']}, momentum=0.9, weight_decay=0.0005)")
+    print(f"Scheduler: StepLR (step_size=5, gamma=0.1)")
+    print()
+    
+    # Training results storage (best model by combined_AP50; higher is better)
+    results = {
+        "config": CONFIG.copy(),
+        "train_losses": [],
+        "val_losses": [],
+        "metrics_per_epoch": [],
+        "best_metric": 0.0,
+        "best_epoch": 0,
+        "best_metric_name": "combined_AP50",
+        "best_bbox_AP50": 0.0,
+        "best_segm_AP50": 0.0,
+        "training_start": datetime.now().isoformat(),
+        "training_time": None,
+        "device": str(device),
+        "num_classes": num_classes
+    }
+    
+    # Output directory
+    output_dir = script_dir / CONFIG["output_dir"]
+    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Output directory: {output_dir}")
+    print()
+    
+    # Training loop
+    print("=" * 80)
+    print(f"Starting Training for {CONFIG['epochs']} Epochs")
+    print("=" * 80)
+    print()
+    
+    start_time = time.time()
+    best_combined_AP50 = 0.0
+    best_epoch = 0
+    best_metric_name = "combined_AP50"
+    early_stop_patience = CONFIG.get("early_stop_patience", 0)
+    early_stop_min_delta = CONFIG.get("early_stop_min_delta", 0.0)
+    epochs_without_improve = 0
+    save_every_n = CONFIG.get("save_checkpoint_every_n_epochs", 0)
+    class_mapping = getattr(base_dataset, "class_mapping", {})
+
+    try:
+        for epoch in range(CONFIG["epochs"]):
+            epoch_start = time.time()
+
+            print(f"Epoch [{epoch+1}/{CONFIG['epochs']}]")
+            print("-" * 80)
+
+            # Train
+            train_stats = train_one_epoch(
+                model,
+                optimizer,
+                train_loader,
+                device,
+                epoch,
+                scheduler=lr_scheduler,
+                scheduler_step_per_iter=False,
+                loss_clip_max=CONFIG.get("loss_clip_max"),
+                loss_skip_threshold=CONFIG.get("loss_skip_threshold"),
+                skip_invalid_targets=CONFIG.get("skip_invalid_targets", True)
+            )
+            results["train_losses"].append(train_stats["total_loss"])
+
+            # Validate
+            val_stats = validate_one_epoch(
+                model,
+                val_loader,
+                device,
+                loss_clip_max=CONFIG.get("loss_clip_max"),
+                loss_skip_threshold=CONFIG.get("loss_skip_threshold"),
+                skip_invalid_targets=CONFIG.get("skip_invalid_targets", True)
+            )
+            results["val_losses"].append(val_stats["total_loss"])
+
+            # Evaluate metrics (COCO AP50)
+            print("Evaluating metrics...")
+            metrics = evaluate_metrics(model, val_loader, device)
+            results["metrics_per_epoch"].append(metrics)
+
+            combined_AP50 = metrics.get("combined_AP50", 0.0)
+            bbox_AP50 = metrics.get("bbox_AP50", 0.0)
+            segm_AP50 = metrics.get("segm_AP50", bbox_AP50)
+            metrics["val_loss"] = val_stats["total_loss"]
+
+            # Print epoch summary
+            print(f"Train Loss: {train_stats['total_loss']:.4f} | Val Loss: {val_stats['total_loss']:.4f}")
+            print(f"combined_AP50: {combined_AP50:.4f} | bbox_AP50: {bbox_AP50:.4f} | segm_AP50: {segm_AP50:.4f}")
+
+            # Best model: save on any improvement. Early stop: no save for patience epochs.
+            is_best = combined_AP50 > best_combined_AP50
+            if is_best:
+                best_combined_AP50 = combined_AP50
+                best_epoch = epoch + 1
+                results["best_metric"] = best_combined_AP50
+                results["best_epoch"] = best_epoch
+                results["best_bbox_AP50"] = bbox_AP50
+                results["best_segm_AP50"] = segm_AP50
+                epochs_without_improve = 0
+                print(f"✓ NEW BEST! combined_AP50: {best_combined_AP50:.4f} (Epoch {best_epoch})")
+                save_best_checkpoint(
+                    model,
+                    epoch=epoch + 1,
+                    best_combined_AP50=best_combined_AP50,
+                    bbox_AP50=bbox_AP50,
+                    segm_AP50=segm_AP50,
+                    config=CONFIG.copy(),
+                    class_mapping=class_mapping,
+                    output_dir=output_dir,
+                    filename="best_model.pth"
+                )
+            else:
+                epochs_without_improve += 1
+                gap = best_combined_AP50 - combined_AP50
+                print(f"  (Best: {best_combined_AP50:.4f}, Gap: {gap:.4f})")
+
+            # Always save last checkpoint
+            save_last_checkpoint(
+                model,
+                optimizer,
+                lr_scheduler,
+                epoch=epoch + 1,
+                metrics=metrics,
+                output_dir=output_dir,
+                filename="last_checkpoint.pth",
+                scaler=None
+            )
+
+            # Optional: save debug checkpoint every N epochs
+            if save_every_n > 0 and (epoch + 1) % save_every_n == 0:
+                debug_path = output_dir / f"checkpoint_epoch_{epoch+1}.pth"
+                torch.save({
+                    "model": model.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "scheduler": lr_scheduler.state_dict(),
+                    "epoch": epoch + 1,
+                    "metrics": metrics
+                }, debug_path)
+                print(f"  → Debug checkpoint saved: {debug_path}")
+
+            if early_stop_patience > 0 and epochs_without_improve >= early_stop_patience:
+                print(f"Early stopping triggered after {epochs_without_improve} epochs without improvement.")
+                break
+            
+            epoch_time = time.time() - epoch_start
+            print(f"Epoch time: {epoch_time:.2f}s")
+            print()
+            
+            # Step scheduler
+            lr_scheduler.step()
+        
+        results["training_time"] = time.time() - start_time
+        results["training_end"] = datetime.now().isoformat()
+        
+    except KeyboardInterrupt:
+        print("\n[WARNING] Training interrupted by user")
+        results["training_time"] = time.time() - start_time
+        results["training_end"] = datetime.now().isoformat()
+        results["interrupted"] = True
+    except Exception as e:
+        print(f"\n[ERROR] Error during training: {e}")
+        import traceback
+        traceback.print_exc()
+        results["training_time"] = time.time() - start_time
+        results["training_end"] = datetime.now().isoformat()
+        results["error"] = str(e)
+    
+    # Final evaluation
+    print("=" * 80)
+    print("Final Evaluation")
+    print("=" * 80)
+    print()
+    
+    try:
+        final_metrics = evaluate_metrics(model, val_loader, device)
+        results["final_metrics"] = final_metrics
+        
+        print("Final Metrics:")
+        for key, value in final_metrics.items():
+            if isinstance(value, (int, float)):
+                print(f"  {key}: {value:.4f}")
+            else:
+                print(f"  {key}: {value}")
+        print()
+        
+    except Exception as e:
+        print(f"[WARNING] Error in final evaluation: {e}")
+        results["final_metrics"] = {}
+    
+    # Save results
+    print("=" * 80)
+    print("Saving Results")
+    print("=" * 80)
+    print()
+    
+    results_file = output_dir / "training_results.json"
+    try:
+        with open(results_file, 'w', encoding='utf-8') as f:
+            json.dump(results, f, indent=2, default=str)
+        print(f"[OK] Results saved to: {results_file}")
+    except Exception as e:
+        print(f"[ERROR] Error saving results: {e}")
+    
+    # Generate report
+    report_file = output_dir / "training_report.md"
+    try:
+        generate_report(results, report_file)
+        print(f"[OK] Report saved to: {report_file}")
+    except Exception as e:
+        print(f"[ERROR] Error generating report: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    # Print summary
+    print()
+    print("=" * 80)
+    print("Training Summary")
+    print("=" * 80)
+    print(f"Total training time: {results['training_time']:.2f} seconds ({results['training_time']/60:.2f} minutes)")
+    print(f"Best {best_metric_name}: {results['best_metric']:.4f} at epoch {best_epoch}")
+    print(f"Final train loss: {results['train_losses'][-1]:.4f}")
+    print(f"Final val loss: {results['val_losses'][-1]:.4f}")
+    print()
+    print(f"Checkpoints saved to: {output_dir}")
+    print(f"  - best_model.pth (epoch {best_epoch}, combined_AP50={results['best_metric']:.4f})")
+    print(f"  - last_checkpoint.pth (for resume)")
+    print()
+    print("=" * 80)
+    print("[OK] Training Complete!")
+    print("=" * 80)
+    
+    return results
+
+# ============================================================================
+# Report Generation
+# ============================================================================
+
+def generate_report(results: dict, output_file: Path):
+    """Generate comprehensive markdown report."""
+    
+    report = []
+    report.append("# Medical Augmentation Training Report\n\n")
+    report.append(f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+    report.append("=" * 80 + "\n\n")
+    
+    # Configuration
+    report.append("## Configuration\n\n")
+    config = results["config"]
+    report.append("### Training Settings\n\n")
+    report.append(f"- **Epochs**: {config['epochs']}\n")
+    report.append(f"- **Batch Size**: {config['batch_size']}\n")
+    report.append(f"- **Learning Rate**: {config['lr']}\n")
+    report.append(f"- **Image Size**: {config['image_size']}\n")
+    report.append(f"- **Device**: {results.get('device', 'unknown')}\n")
+    report.append(f"- **Number of Classes**: {results.get('num_classes', 'unknown')}\n\n")
+    
+    report.append("### Augmentation Settings\n\n")
+    report.append(f"- **Medical Augmentation**: {config['use_medical_augmentation']}\n")
+    report.append(f"- **Preserve Marker**: {config['preserve_marker']}\n")
+    report.append(f"- **Intensity**: {config['intensity']}\n\n")
+    
+    # Results
+    report.append("## Results\n\n")
+    best_metric_name = results.get("best_metric_name", "metric")
+    report.append(f"- **Best Metric ({best_metric_name})**: {results['best_metric']:.4f}\n")
+    report.append(f"- **Best Epoch**: {results['best_epoch']}\n")
+    report.append(f"- **Training Time**: {results['training_time']:.2f} seconds ({results['training_time']/60:.2f} minutes)\n")
+    report.append(f"- **Training Start**: {results['training_start']}\n")
+    report.append(f"- **Training End**: {results['training_end']}\n\n")
+    
+    # Final metrics
+    if "final_metrics" in results and results["final_metrics"]:
+        report.append("## Final Metrics\n\n")
+        for key, value in results["final_metrics"].items():
+            if isinstance(value, (int, float)):
+                report.append(f"- **{key}**: {value:.4f}\n")
+            else:
+                report.append(f"- **{key}**: {value}\n")
+        report.append("\n")
+    
+    # Loss progression
+    if results["train_losses"] and results["val_losses"]:
+        report.append("## Loss Progression\n\n")
+        report.append("| Epoch | Train Loss | Val Loss |\n")
+        report.append("|-------|------------|----------|\n")
+        for i, (train_loss, val_loss) in enumerate(zip(results["train_losses"], results["val_losses"])):
+            report.append(f"| {i+1} | {train_loss:.4f} | {val_loss:.4f} |\n")
+        report.append("\n")
+    
+    # Metrics progression
+    if results["metrics_per_epoch"]:
+        report.append("## Metrics Progression\n\n")
+        first_metrics = results["metrics_per_epoch"][0]
+        metric_keys = [k for k in first_metrics.keys() if isinstance(first_metrics[k], (int, float))]
+        
+        if metric_keys:
+            header = "| Epoch | " + " | ".join(metric_keys) + " |\n"
+            report.append(header)
+            report.append("|-------|" + "|".join(["---" for _ in metric_keys]) + "|\n")
+            
+            for i, metrics in enumerate(results["metrics_per_epoch"]):
+                row = f"| {i+1} | " + " | ".join([f"{metrics.get(k, 0):.4f}" for k in metric_keys]) + " |\n"
+                report.append(row)
+            report.append("\n")
+    
+    # Analysis
+    report.append("## Analysis\n\n")
+    
+    if results["train_losses"] and results["val_losses"]:
+        initial_train_loss = results["train_losses"][0]
+        final_train_loss = results["train_losses"][-1]
+        initial_val_loss = results["val_losses"][0]
+        final_val_loss = results["val_losses"][-1]
+        
+        train_improvement = ((initial_train_loss - final_train_loss) / initial_train_loss) * 100
+        val_improvement = ((initial_val_loss - final_val_loss) / initial_val_loss) * 100
+        
+        report.append("### Loss Improvement\n\n")
+        report.append(f"- **Train Loss**: {initial_train_loss:.4f} -> {final_train_loss:.4f} ({train_improvement:+.2f}%)\n")
+        report.append(f"- **Val Loss**: {initial_val_loss:.4f} -> {final_val_loss:.4f} ({val_improvement:+.2f}%)\n\n")
+    
+    if results["metrics_per_epoch"] and results.get("best_metric_name") == "combined_AP50":
+        first_metric = results["metrics_per_epoch"][0].get("combined_AP50", results["metrics_per_epoch"][0].get("bbox_AP50", 0.0))
+        best_metric = results["best_metric"]
+        if first_metric > 0:
+            metric_improvement = ((best_metric - first_metric) / first_metric) * 100
+            report.append("### Metric Improvement\n\n")
+            report.append(f"- **Initial Metric**: {first_metric:.4f}\n")
+            report.append(f"- **Best Metric**: {best_metric:.4f}\n")
+            report.append(f"- **Improvement**: {metric_improvement:+.2f}%\n\n")
+    
+    # Save report
+    with open(output_file, 'w', encoding='utf-8') as f:
+        f.writelines(report)
+
+
+# ============================================================================
+# Review Training Results (Option C)
+# ============================================================================
+
+def review_training_results(
+    path: Union[str, Path],
+    plot: bool = True,
+    verbose: bool = True
+) -> Dict:
+    """
+    Load training_results.json and print summary; optionally plot loss and metrics.
+
+    Args:
+        path: Path to training_results.json file, or to directory containing it (e.g. checkpoints_dir).
+        plot: If True, show loss (and metrics) curves using matplotlib.
+        verbose: If True, print summary to stdout.
+
+    Returns:
+        The loaded results dictionary.
+    """
+    path = Path(path)
+    if path.is_dir():
+        path = path / "training_results.json"
+    if not path.exists():
+        raise FileNotFoundError(f"Training results not found: {path}")
+
+    with open(path, 'r', encoding='utf-8') as f:
+        results = json.load(f)
+
+    if verbose:
+        print("=" * 60)
+        print("Training Results Summary")
+        print("=" * 60)
+        print(f"Best metric ({results.get('best_metric_name', 'val_loss')}): {results.get('best_metric', 0):.4f}")
+        print(f"Best epoch: {results.get('best_epoch', 0)}")
+        print(f"Training time: {results.get('training_time', 0):.2f}s ({results.get('training_time', 0) / 60:.2f} min)")
+        print(f"Device: {results.get('device', 'unknown')}")
+        if results.get('train_losses'):
+            print(f"Final train loss: {results['train_losses'][-1]:.4f}")
+            print(f"Final val loss: {results['val_losses'][-1]:.4f}")
+        if results.get('final_metrics'):
+            print("Final metrics:")
+            for k, v in results['final_metrics'].items():
+                if isinstance(v, (int, float)):
+                    print(f"  {k}: {v:.4f}")
+                else:
+                    print(f"  {k}: {v}")
+        print("=" * 60)
+
+    if plot and results.get('train_losses'):
+        try:
+            import matplotlib.pyplot as plt
+            n_epochs = len(results['train_losses'])
+            epochs_range = range(1, n_epochs + 1)
+            n_plots = 2 if results.get('metrics_per_epoch') and results['metrics_per_epoch'] else 1
+            fig, axes = plt.subplots(1, n_plots, figsize=(6 * n_plots, 4))
+            if n_plots == 1:
+                axes = [axes]
+            axes[0].plot(epochs_range, results['train_losses'], label='Train Loss', marker='o', markersize=2)
+            axes[0].plot(epochs_range, results['val_losses'], label='Val Loss', marker='s', markersize=2)
+            axes[0].set_xlabel('Epoch')
+            axes[0].set_ylabel('Loss')
+            axes[0].set_title('Train vs Validation Loss')
+            axes[0].legend()
+            axes[0].grid(True, alpha=0.3)
+            if n_plots == 2 and results.get('metrics_per_epoch') and len(results['metrics_per_epoch']) == n_epochs:
+                first = results['metrics_per_epoch'][0]
+                metric_keys = [k for k in first if isinstance(first.get(k), (int, float))]
+                for k in metric_keys:
+                    vals = [m.get(k, 0) for m in results['metrics_per_epoch']]
+                    axes[1].plot(epochs_range, vals, label=k, marker='o', markersize=2)
+                axes[1].set_xlabel('Epoch')
+                axes[1].set_ylabel('Metric')
+                axes[1].set_title('Detection/Segmentation Metrics')
+                axes[1].legend()
+                axes[1].grid(True, alpha=0.3)
+            plt.tight_layout()
+            plt.show()
+        except ImportError:
+            if verbose:
+                print("matplotlib not available; skip plotting.")
+
+    return results
+
+
+# ============================================================================
+# CLI Training Function (for backward compatibility)
+# ============================================================================
+
+def run_training_cli():
+    """CLI interface for training (backward compatibility)."""
+    parser = argparse.ArgumentParser(description="Wound Detection Training")
+    parser.add_argument("--data-root", default="data", help="Path to data root")
+    parser.add_argument("--train-ann", required=True, help="Path to training annotation file")
+    parser.add_argument("--val-ann", required=True, help="Path to validation annotation file")
+    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--lr", type=float, default=0.005)
+    parser.add_argument("--output-dir", default="checkpoints")
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--dry-run", action="store_true", help="Run strictly 1 batch for sanity check")
+    
+    args = parser.parse_args()
+    
+    # Validate annotation files exist
+    if not os.path.exists(args.train_ann):
+        raise FileNotFoundError(f"Training annotation file not found: {args.train_ann}")
+    if not os.path.exists(args.val_ann):
+        raise FileNotFoundError(f"Validation annotation file not found: {args.val_ann}")
+    
+    set_seed(args.seed)
+    # Prefer CUDA (GPU) for training
+    device = get_device(prefer_cuda=True)
+    print(f"CUDA available: {torch.cuda.is_available()}")
+    if device.type == "cuda":
+        print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+    else:
+        print("Using device: CPU (GPU not available)")
+    print(f"Device: {device}")
+    
+    # Create datasets
+    train_dataset = create_dataset(args.data_root, args.train_ann, train=True)
+    val_dataset = create_dataset(args.data_root, args.val_ann, train=False)
+    
+    if args.dry_run:
+        indices = range(4)
+        train_dataset = torch.utils.data.Subset(train_dataset, indices)
+        val_dataset = torch.utils.data.Subset(val_dataset, indices)
+        print("Dry run: reduced dataset size.")
+
+    train_loader, val_loader = make_dataloaders(train_dataset, val_dataset, batch_size=args.batch_size)
+    
+    # Model: use dataset.num_classes so head matches filtered/remapped labels (root cause fix).
+    base_dataset = train_dataset.dataset if isinstance(train_dataset, torch.utils.data.Subset) else train_dataset
+    if hasattr(base_dataset, 'num_classes'):
+        num_classes = base_dataset.num_classes
+    else:
+        if hasattr(base_dataset, 'coco_json'):
+            num_classes = len(base_dataset.coco_json['categories']) + 1
+        else:
+            num_classes = len(base_dataset.coco['categories']) + 1
+        print(f"[WARNING] Dataset has no num_classes; using len(categories)+1={num_classes}")
+    print(f"Detected {num_classes-1} classes + background")
+    
+    model = build_model(num_classes)
+    model.to(device)
+    
+    # Startup report (same as main training path)
+    print()
+    print("--- Startup report (num_classes / labels) ---")
+    print(f"  Model num_classes:    {num_classes}")
+    print(f"  Dataset num_classes:  {getattr(base_dataset, 'num_classes', 'N/A')}")
+    class_names = getattr(base_dataset, 'target_class_names', TARGET_CLASSES_NAMES)
+    if class_names:
+        print(f"  Target class names:   {class_names}")
+    unique_labels = validate_dataset_labels(train_loader, num_classes, num_batches=5)
+    print(f"  Unique labels in sampled batches: {unique_labels}")
+    if unique_labels:
+        print(f"  Min label in sampled targets: {min(unique_labels)}")
+        print(f"  Max label in sampled targets: {max(unique_labels)}")
+    print("----------------------------------------------")
+    print()
+    
+    # Incompatible checkpoints warning (same as main path)
+    _ckpt_dir = Path(args.output_dir)
+    if _ckpt_dir.exists() and (list(_ckpt_dir.glob("*.pth")) or list(_ckpt_dir.glob("*.pt"))):
+        print("[WARNING] If you changed the number of classes (e.g. from raw COCO categories to dataset.num_classes), "
+              "delete existing checkpoints (best_model.pth, last_checkpoint.pth) or training will fail or behave incorrectly.")
+        print()
+    
+    # Optimizer
+    params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = optim.SGD(params, lr=args.lr, momentum=0.9, weight_decay=0.0005)
+    lr_scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.1)
+    
+    best_combined_AP50 = 0.0
+    early_stop_patience = CONFIG.get("early_stop_patience", 12)
+    early_stop_min_delta = CONFIG.get("early_stop_min_delta", 0.003)
+    epochs_without_improve = 0
+    base_dataset = train_dataset.dataset if isinstance(train_dataset, torch.utils.data.Subset) else train_dataset
+    class_mapping = getattr(base_dataset, "class_mapping", {})
+
+    for epoch in range(args.epochs):
+        loss_dict = train_one_epoch(
+            model,
+            optimizer,
+            train_loader,
+            device,
+            epoch,
+            loss_clip_max=CONFIG.get("loss_clip_max"),
+            loss_skip_threshold=CONFIG.get("loss_skip_threshold"),
+            skip_invalid_targets=CONFIG.get("skip_invalid_targets", True)
+        )
+        val_loss_dict = validate_one_epoch(
+            model,
+            val_loader,
+            device,
+            loss_clip_max=CONFIG.get("loss_clip_max"),
+            loss_skip_threshold=CONFIG.get("loss_skip_threshold"),
+            skip_invalid_targets=CONFIG.get("skip_invalid_targets", True)
+        )
+        
+        print(f"Epoch {epoch} Val Loss: {val_loss_dict['total_loss']:.4f}")
+        
+        metrics = evaluate_metrics(model, val_loader, device)
+        combined_AP50 = metrics.get("combined_AP50", 0.0)
+        bbox_AP50 = metrics.get("bbox_AP50", 0.0)
+        segm_AP50 = metrics.get("segm_AP50", bbox_AP50)
+        metrics["val_loss"] = val_loss_dict["total_loss"]
+        
+        # Best model: save on any improvement. Early stop: no save for patience epochs.
+        is_best = combined_AP50 > best_combined_AP50
+        if is_best:
+            best_combined_AP50 = combined_AP50
+            epochs_without_improve = 0
+            save_best_checkpoint(
+                model,
+                epoch=epoch + 1,
+                best_combined_AP50=best_combined_AP50,
+                bbox_AP50=bbox_AP50,
+                segm_AP50=segm_AP50,
+                config=CONFIG.copy(),
+                class_mapping=class_mapping,
+                output_dir=Path(args.output_dir),
+                filename="best_model.pth"
+            )
+        else:
+            epochs_without_improve += 1
+            
+        save_last_checkpoint(
+            model,
+            optimizer,
+            lr_scheduler,
+            epoch=epoch + 1,
+            metrics=metrics,
+            output_dir=Path(args.output_dir),
+            filename="last_checkpoint.pth",
+            scaler=None
+        )
+        
+        lr_scheduler.step()
+
+        if early_stop_patience > 0 and epochs_without_improve >= early_stop_patience:
+            print(f"Early stopping triggered after {epochs_without_improve} epochs without improvement.")
+            break
+
+# ============================================================================
+# Entry Point
+# ============================================================================
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Wound Detection Training / Review")
+    parser.add_argument(
+        "--review",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Review training outputs: path to training_results.json or checkpoints directory",
+    )
+    parser.add_argument("--no-plot", action="store_true", help="When using --review, do not show plots")
+    parser.add_argument(
+        "--data-mode",
+        choices=["clean_only", "clean_online_aug", "clean_offline_aug"],
+        default=None,
+        help="Override CONFIG data_mode: clean_only | clean_online_aug (recommended) | clean_offline_aug",
+    )
+    args, rest = parser.parse_known_args()
+
+    if args.data_mode is not None:
+        CONFIG["data_mode"] = args.data_mode
+
+    if args.review is not None:
+        review_training_results(args.review, plot=not args.no_plot, verbose=True)
+        sys.exit(0)
+
+    try:
+        results = main()
+        if results:
+            print("\n[OK] Script completed successfully!")
+            sys.exit(0)
+        else:
+            print("\n[ERROR] Script completed with errors.")
+            sys.exit(1)
+    except Exception as e:
+        print(f"\n[ERROR] Fatal error: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)

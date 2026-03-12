@@ -1,0 +1,4 @@
+All checks passed.
+
+Note: Statistics verified from actual files. Images without wound annotations = 11
+(not 10). Consistency: 369 + 11 = 380.

@@ -74,8 +74,11 @@ Wound-infection-detection-model/
 │   │   ├── train.json
 │   │   ├── val.json
 │   │   └── test.json
-│   ├── wound_focus_clean/         # Standardized image set (from build_wound_focus_dataset)
+│   ├── wound_focus_clean/         # Standardized dataset (wound-only, infection labels)
 │   │   ├── images/
+│   │   ├── annotations_wound_only.json
+│   │   ├── labels_infection.json
+│   │   ├── train/val/test_wound_only.json, *_images.txt
 │   │   ├── mappings/
 │   │   └── reports/
 │   └── augmented/                 # Augmented data (optional)
@@ -90,12 +93,14 @@ Wound-infection-detection-model/
 │
 ├── scripts/
 │   ├── build_wound_focus_dataset.py  # Safe image renaming and mapping pipeline
+│   ├── build_wound_only_dataset.py   # Wound-only COCO, infection labels, splits
 │   ├── apply_augmentation_only.py    # Offline augmentation
 │   └── augmentation_strategy.py     # Augmentation strategy
 │
 ├── docs/
-│   ├── WOUND_FOCUS_DATASET_DOCUMENTATION.md  # Dataset pipeline documentation
-│   └── DATA_AUGMENTATION_GUIDE.md  # Augmentation guide
+│   ├── DATASET_BUILD_PIPELINE.md              # Full dataset build pipeline (stages 1 & 2)
+│   ├── WOUND_FOCUS_DATASET_DOCUMENTATION.md   # Stage 1: standardization details
+│   └── DATA_AUGMENTATION_GUIDE.md             # Augmentation guide
 │
 ├── checkpoints/                   # Saved models (created during training)
 ├── requirements.txt
@@ -169,15 +174,23 @@ CONFIG = {
 
 ## Data Preparation
 
-### Build wound focus dataset
+The dataset build has two stages. See `docs/DATASET_BUILD_PIPELINE.md` for full documentation.
+
+### Stage 1: Build wound focus dataset (standardization)
 
 ```bash
 cd scripts
-python build_wound_focus_dataset.py --data-root ../data --output-dir ../data/wound_focus_clean
-python build_wound_focus_dataset.py --copy   # Copy images after validating mapping
+python build_wound_focus_dataset.py --data-root ../data --output-dir ../data/wound_focus_clean --copy
 ```
 
-See `docs/WOUND_FOCUS_DATASET_DOCUMENTATION.md` for details.
+### Stage 2: Build wound-only annotations and splits
+
+```bash
+cd scripts
+python build_wound_only_dataset.py --data-root ../data
+```
+
+Creates `annotations_wound_only.json`, `labels_infection.json`, `train/val/test_wound_only.json`, and split lists. See `data/wound_focus_clean/reports/dataset_build_report.md`.
 
 ### Apply augmentation
 
@@ -227,6 +240,7 @@ python apply_augmentation_only.py
 | `notebooks/train_model.py` | Unified training, evaluation, and inference |
 | `notebooks/training_pipeline.ipynb` | Interactive training and analysis |
 | `scripts/build_wound_focus_dataset.py` | Safe image renaming and mapping pipeline |
+| `scripts/build_wound_only_dataset.py` | Wound-only COCO, infection labels, splits |
 | `scripts/apply_augmentation_only.py` | Offline augmentation |
 | `scripts/augmentation_strategy.py` | Medical augmentation strategy |
 
