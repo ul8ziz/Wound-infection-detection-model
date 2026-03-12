@@ -28,6 +28,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
+import cv2
 
 import torchvision
 from torchvision.models.detection import maskrcnn_resnet50_fpn
@@ -442,6 +443,7 @@ def evaluate_metrics(
 
         coco_results_bbox = []
         coco_results_segm = []
+        _debug_logged = False  # Log once per evaluation
 
         for images, targets in data_loader:
             images = list(img.to(device) for img in images)
@@ -449,8 +451,21 @@ def evaluate_metrics(
             
             outputs = [{k: v.to(cpu_device) for k, v in t.items()} for t in outputs]
             
-            for target, output in zip(targets, outputs):
+            for idx, (target, output) in enumerate(zip(targets, outputs)):
                 image_id = target["image_id"].item()
+                
+                # Get original image dimensions from COCO (GT is in original coords)
+                img_info = coco_gt.loadImgs(image_id)
+                if not img_info:
+                    continue
+                img_info = img_info[0]
+                orig_h = img_info["height"]
+                orig_w = img_info["width"]
+                
+                # Get prediction-space dimensions from the input image tensor
+                _, pred_h, pred_w = images[idx].shape
+                scale_x = orig_w / pred_w
+                scale_y = orig_h / pred_h
                 
                 boxes = output["boxes"].tolist()
                 scores = output["scores"].tolist()
@@ -471,10 +486,16 @@ def evaluate_metrics(
                     x = x1
                     y = y1
                     
+                    # Scale bbox from prediction space to original image space
+                    x_orig = x * scale_x
+                    y_orig = y * scale_y
+                    w_orig = w * scale_x
+                    h_orig = h * scale_y
+                    
                     res_bbox = {
                         "image_id": image_id,
                         "category_id": inv_class_mapping.get(int(labels[i]), int(labels[i])),
-                        "bbox": [x, y, w, h],
+                        "bbox": [x_orig, y_orig, w_orig, h_orig],
                         "score": float(scores[i])
                     }
                     coco_results_bbox.append(res_bbox)
@@ -484,13 +505,33 @@ def evaluate_metrics(
                         mask = masks_np[i]
                         if mask.dtype != np.uint8:
                             mask = mask.astype(np.uint8)
+                        # Resize mask to original image dimensions (COCO expects RLE size = image size)
+                        if mask.shape[0] != orig_h or mask.shape[1] != orig_w:
+                            mask = cv2.resize(
+                                mask, (orig_w, orig_h),
+                                interpolation=cv2.INTER_NEAREST
+                            )
                         rle = mask_util.encode(np.asfortranarray(mask))
                         if isinstance(rle['counts'], bytes):
                             rle['counts'] = rle['counts'].decode('utf-8')
                         
+                        # Debug logging (once per evaluation)
+                        if not _debug_logged:
+                            print(
+                                f"[COCO eval] pred_mask=({pred_h},{pred_w}) "
+                                f"orig_image=({orig_h},{orig_w}) "
+                                f"rle_size={rle.get('size', 'N/A')} "
+                                f"segm_count={len(coco_results_segm)+1} "
+                                f"bbox_count={len(coco_results_bbox)}"
+                            )
+                            _debug_logged = True
+                        
                         res_segm = res_bbox.copy()
                         res_segm["segmentation"] = rle
                         coco_results_segm.append(res_segm)
+        
+        # Debug: log final counts
+        print(f"[COCO eval] Total: bbox={len(coco_results_bbox)} segm={len(coco_results_segm)}")
         
         if not coco_results_bbox:
             print("⚠️  No predictions generated (all scores below threshold or no detections).")

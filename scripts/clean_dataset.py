@@ -72,9 +72,51 @@ def _parse_cvat_points(points: Any) -> Optional[List[List[float]]]:
     return None
 
 
+def _load_manifest_images(data_dir: Path, data_root: Path) -> List[Dict]:
+    """Load image list from manifest.jsonl (avoids cv2.imread which fails on Unicode paths)."""
+    manifest = data_dir / "manifest.jsonl"
+    if not manifest.exists():
+        return []
+    images: List[Dict] = []
+    with open(manifest, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or '"type"' in line or '"version"' in line:
+                continue
+            try:
+                entry = json.loads(line)
+                name = entry.get("name", "")
+                ext = entry.get("extension", ".jpg")
+                w = int(entry.get("width", 0))
+                h = int(entry.get("height", 0))
+                if not name or w <= 0 or h <= 0:
+                    continue
+                rel_path = data_dir.relative_to(data_root) / (name + ext)
+                images.append({
+                    "file_name": str(rel_path).replace("\\", "/"),
+                    "width": w,
+                    "height": h,
+                })
+            except (json.JSONDecodeError, KeyError):
+                continue
+    return images
+
+
+def _get_shapes_for_frame(cvat_anns: List[Dict], frame_idx: int) -> List[Dict]:
+    """Get shapes for a given frame from CVAT annotations."""
+    if not cvat_anns or not isinstance(cvat_anns[0], dict):
+        return []
+    # CVAT 2.0: list of frames (annotations[i]=frame i) or single object with shapes having "frame" field
+    if frame_idx < len(cvat_anns) and len(cvat_anns) > 1:
+        return cvat_anns[frame_idx].get("shapes", [])
+    all_shapes = cvat_anns[0].get("shapes", [])
+    return [s for s in all_shapes if s.get("frame", 0) == frame_idx]
+
+
 def load_from_cvat(data_root: Path) -> Tuple[List[Dict], List[Dict], Dict[int, str]]:
     """
     Load images and annotations from CVAT task folders.
+    Uses manifest.jsonl when available (avoids cv2.imread on Unicode paths).
     Returns: (images, annotations, category_id_to_name)
     """
     project_file = data_root / "project.json"
@@ -102,24 +144,20 @@ def load_from_cvat(data_root: Path) -> Tuple[List[Dict], List[Dict], Dict[int, s
                 cvat_anns = json.load(f)
 
             data_dir = task_folder / "data"
-            image_files = list(data_dir.glob("*.jpg")) + list(data_dir.glob("*.png"))
-
-            for img_file in image_files:
-                img = cv2.imread(str(img_file))
-                if img is None:
-                    continue
-                h, w = img.shape[:2]
-                is_infected = "-not-" not in img_file.name.lower()
-                images.append({
-                    "id": image_id,
-                    "file_name": str(img_file.relative_to(data_root)),
-                    "width": w,
-                    "height": h,
-                    "infection_status": is_infected,
-                })
-
-                if len(cvat_anns) > 0 and "shapes" in cvat_anns[0]:
-                    for shape in cvat_anns[0]["shapes"]:
+            # Prefer manifest.jsonl (works with Unicode paths; no cv2 needed)
+            manifest_images = _load_manifest_images(data_dir, data_root)
+            if manifest_images:
+                for frame_idx, img_info in enumerate(manifest_images):
+                    is_infected = "-not-" not in img_info["file_name"].lower()
+                    images.append({
+                        "id": image_id,
+                        "file_name": img_info["file_name"],
+                        "width": img_info["width"],
+                        "height": img_info["height"],
+                        "infection_status": is_infected,
+                    })
+                    shapes = _get_shapes_for_frame(cvat_anns, frame_idx)
+                    for shape in shapes:
                         if shape["type"] != "polygon" or shape["label"] not in label_map:
                             continue
                         points = _parse_cvat_points(shape["points"])
@@ -143,8 +181,49 @@ def load_from_cvat(data_root: Path) -> Tuple[List[Dict], List[Dict], Dict[int, s
                             "iscrowd": 0,
                         })
                         annotation_id += 1
-
-                image_id += 1
+                    image_id += 1
+            else:
+                # Fallback: glob + cv2.imread (may fail on Unicode paths)
+                image_files = sorted(data_dir.glob("*.jpg")) + sorted(data_dir.glob("*.png"))
+                for idx, img_file in enumerate(image_files):
+                    img = cv2.imread(str(img_file))
+                    if img is None:
+                        continue
+                    h, w = img.shape[:2]
+                    is_infected = "-not-" not in img_file.name.lower()
+                    images.append({
+                        "id": image_id,
+                        "file_name": str(img_file.relative_to(data_root)).replace("\\", "/"),
+                        "width": w,
+                        "height": h,
+                        "infection_status": is_infected,
+                    })
+                    shapes = _get_shapes_for_frame(cvat_anns, idx)
+                    for shape in shapes:
+                        if shape["type"] != "polygon" or shape["label"] not in label_map:
+                            continue
+                        points = _parse_cvat_points(shape["points"])
+                        if points is None or len(points) < MIN_POLYGON_POINTS:
+                            continue
+                        polygon = [c for p in points for c in p]
+                        x_coords = [p[0] for p in points]
+                        y_coords = [p[1] for p in points]
+                        x_min, x_max = min(x_coords), max(x_coords)
+                        y_min, y_max = min(y_coords), max(y_coords)
+                        bbox = [x_min, y_min, x_max - x_min, y_max - y_min]
+                        area = (x_max - x_min) * (y_max - y_min)
+                        annotations.append({
+                            "id": annotation_id,
+                            "image_id": image_id,
+                            "category_id": label_map[shape["label"]],
+                            "category_name": shape["label"],
+                            "segmentation": [polygon],
+                            "area": area,
+                            "bbox": bbox,
+                            "iscrowd": 0,
+                        })
+                        annotation_id += 1
+                    image_id += 1
         except Exception as e:
             print(f"[WARNING] Error processing {task_folder.name}: {e}")
 
@@ -445,6 +524,11 @@ def main():
         metavar=("TRAIN", "VAL", "TEST"),
         help="Train/val/test ratios",
     )
+    parser.add_argument(
+        "--convert-only",
+        action="store_true",
+        help="Convert CVAT to COCO without cleaning (raw data for inspection)",
+    )
     args = parser.parse_args()
 
     data_root = Path(args.data_root)
@@ -473,6 +557,27 @@ def main():
         print("[ERROR] No images or annotations loaded")
         sys.exit(1)
 
+    if args.convert_only:
+        # Raw conversion: no cleaning, all labels, as-is for inspection
+        categories = [{"id": cid, "name": name} for cid, name in sorted(cat_id_to_name.items())]
+        output_data = {
+            "images": images,
+            "annotations": annotations,
+            "categories": categories,
+        }
+        output_path = Path(args.output)
+        if not output_path.is_absolute():
+            output_path = (PROJECT_ROOT / output_path).resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(output_data, f, indent=2, ensure_ascii=False)
+        try:
+            print(f"[OK] Converted (raw, no cleaning): {len(images)} images, {len(annotations)} annotations -> {output_path}")
+        except UnicodeEncodeError:
+            print(f"[OK] Converted (raw): {len(images)} images, {len(annotations)} annotations")
+        print("View with: python coco_dataset_viewer.py -i <data-root> -a <output.json>")
+        return
+
     cleaned_images, cleaned_annotations, report = run_cleaning(images, annotations, cat_id_to_name)
 
     categories = [{"id": i + 1, "name": name} for i, name in enumerate(TARGET_CLASSES)]
@@ -488,7 +593,10 @@ def main():
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(output_data, f, indent=2, ensure_ascii=False)
-    print(f"[OK] Saved cleaned annotations to {output_path}")
+    try:
+        print(f"[OK] Saved cleaned annotations to {output_path}")
+    except UnicodeEncodeError:
+        print(f"[OK] Saved cleaned annotations to {str(output_path).encode('ascii', 'replace').decode('ascii')}")
 
     # Write report
     report_path = Path(args.report)

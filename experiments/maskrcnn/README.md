@@ -2,7 +2,7 @@
 
 This folder contains the **code and outputs** for the Mask R-CNN wound detection experiment.
 
-- **Code:** `training_pipeline.ipynb`, `train_model.py`, `pipeline_utils.py`, `augmentation_strategy.py`
+- **Code:** `training_pipeline.ipynb`, `train_model.py`, `pipeline_utils.py` (augmentation from `scripts/augmentation_strategy.py`)
 - **Outputs:** `checkpoints/` (best_model.pth, last_checkpoint.pth, training_results.json, training_report.md), `results/` (inference JSONs)
 - **Data:** Shared at `../../data` (not copied here)
 

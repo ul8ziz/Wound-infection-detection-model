@@ -1,7 +1,7 @@
 {
   "image_path": "data/task_0/data/task_0_image_001.jpg",
-  "num_detections": 9,
-  "wound_area_cm2": 18.32251614887727,
+  "num_detections": 4,
+  "wound_area_cm2": 25.060018050541522,
   "has_infection": false,
   "infection_confidence": 0.0,
   "findings": {

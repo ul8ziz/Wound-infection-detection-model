@@ -15,7 +15,8 @@ Environment ready for GPU (NVIDIA GeForce RTX 4060 or better).
 
 **`experiments/maskrcnn/train_model.py`** - Unified training script  
 **`experiments/maskrcnn/training_pipeline.ipynb`** - Notebook for training and analysis  
-**`docs/PROJECT_OVERVIEW.md`** - Detailed project overview, requirements, and dataset — reference for understanding the task and choosing the right approach (Mask R-CNN, YOLO, etc.)
+**`docs/PROJECT_OVERVIEW.md`** - Detailed project overview, requirements, and dataset — reference for understanding the task and choosing the right approach (Mask R-CNN, YOLO, etc.)  
+**`docs/IMPROVEMENT_ROADMAP.md`** - 4-phase improvement roadmap for low segm_AP50; coordinate/size fix, dataset, training, and model improvements
 
 ---
 
@@ -32,20 +33,21 @@ Wound-infection-detection-model/
 │   │   ├── train.json
 │   │   ├── val.json
 │   │   └── test.json
-│   └── augmented_clean/             # Augmented data from cleaned (optional; do NOT use old data/augmented)
-│       ├── annotations_augmented_clean.json
-│       └── images/
+│   └── augmented_clean/             # Augmented data from cleaned (optional; do NOT use 
 │
 ├── scripts/                        # Helper scripts
 │   ├── clean_dataset.py            # Clean annotations (filter, simplify, validate)
 │   ├── validate_cleaned_dataset.py # Validate annotations_cleaned.json
 │   ├── visualize_cleaned_dataset.py # Visualize cleaned annotations
+│   ├── coco_dataset_viewer.py      # GUI viewer for COCO bboxes/masks; --check to validate
 │   ├── apply_augmentation_only.py  # Apply augmentation to data
 │   └── augmentation_strategy.py   # Augmentation strategy
 │
 ├── docs/                           # Documentation
 │   ├── PROJECT_OVERVIEW.md         # Detailed project and dataset overview
-│   └── DATA_AUGMENTATION_GUIDE.md  # Augmentation guide
+│   ├── DATA_AUGMENTATION_GUIDE.md  # Augmentation guide
+│   ├── IMPROVEMENT_ROADMAP.md      # 4-phase roadmap for low segm_AP50
+│   └── SEGMENTATION_DEBUG_PLAN.md  # Segmentation-specific debug checks
 │
 ├── experiments/                    # Each experiment has its folder: code + outputs (shared dataset)
 │   ├── maskrcnn/                   # Mask R-CNN experiment
@@ -53,8 +55,7 @@ Wound-infection-detection-model/
 │   │   ├── results/                 # Inference results (*_result.json)
 │   │   ├── training_pipeline.ipynb  # Notebook for this experiment
 │   │   ├── train_model.py           # Training script for this experiment
-│   │   ├── pipeline_utils.py        # Data utilities for this experiment
-│   │   └── augmentation_strategy.py
+│   │   └── pipeline_utils.py        # Data utilities (uses scripts/augmentation_strategy.py)
 │   └── yolo/                        # YOLO experiment (when added): same structure
 │
 ├── requirements.txt                # Dependencies
@@ -128,6 +129,8 @@ Output: `data/annotations_cleaned.json`, `data/cleaning_report.txt`. Validate an
 ```bash
 python validate_cleaned_dataset.py
 python visualize_cleaned_dataset.py --num-samples 8
+python coco_dataset_viewer.py --check -a ../data/splits/val.json   # Validate dataset
+python coco_dataset_viewer.py -i ../data -a ../data/splits/val.json # GUI viewer (bboxes/masks)
 ```
 
 **Train on cleaned data:** If splits are missing, `train_model.py` automatically uses `annotations_cleaned.json`. After `clean_dataset.py --split`, use `data/splits/train.json` (derived from cleaned data).
@@ -506,6 +509,10 @@ Ensure `data/` folder contains:
 - Reduce `learning_rate` to 0.0005
 - Increase `epochs` to 100
 - Ensure data is correct
+
+### segm_AP50 near zero but bbox_AP50 improves?
+- **Coordinate/size mismatch**: Predictions at 1024x1024 vs GT at original image size. Fixed in `train_model.py` (resize masks, scale bboxes before COCO eval).
+- See [docs/IMPROVEMENT_ROADMAP.md](docs/IMPROVEMENT_ROADMAP.md) and [docs/SEGMENTATION_DEBUG_PLAN.md](docs/SEGMENTATION_DEBUG_PLAN.md) for full diagnosis and fixes.
 
 ### Model too slow?
 - Reduce `image_size`

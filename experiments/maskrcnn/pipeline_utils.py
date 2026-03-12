@@ -523,18 +523,14 @@ def get_transforms(
         intensity: Augmentation intensity ("light", "moderate", "aggressive")
     """
     if use_medical_augmentation:
-        # Use comprehensive medical augmentation strategy
+        # Use comprehensive medical augmentation strategy from scripts/ (single source of truth)
         try:
             import sys
             from pathlib import Path
             this_dir = Path(__file__).resolve().parent
-            # Prefer same directory as this file (per-experiment copy)
-            if (this_dir / "augmentation_strategy.py").exists():
-                sys.path.insert(0, str(this_dir))
-            else:
-                scripts_dir = this_dir.parent.parent / "scripts"
-                if (scripts_dir / "augmentation_strategy.py").exists():
-                    sys.path.insert(0, str(scripts_dir))
+            scripts_dir = this_dir.parent.parent / "scripts"
+            if (scripts_dir / "augmentation_strategy.py").exists():
+                sys.path.insert(0, str(scripts_dir))
             from augmentation_strategy import get_medical_augmentation_pipeline
             return get_medical_augmentation_pipeline(
                 train=train,
