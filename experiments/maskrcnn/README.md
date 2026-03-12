@@ -2,8 +2,8 @@
 
 This folder contains the **code and outputs** for the Mask R-CNN wound detection experiment.
 
-- **Code:** `training_pipeline.ipynb`, `train_model.py`, `pipeline_utils.py` (augmentation from `scripts/augmentation_strategy.py`)
-- **Outputs:** `checkpoints/` (best_model.pth, last_checkpoint.pth, training_results.json, training_report.md), `results/` (inference JSONs)
+- **Code:** `training_pipeline.ipynb`, `train_model.py`, `train_wound_only.py`, `validate_wound_only_dataset.py`, `pipeline_utils.py` (augmentation from `scripts/augmentation_strategy.py`)
+- **Outputs:** `checkpoints/` (multi-class), `checkpoints_wound_only/` (wound-only baseline), `results_wound_only/`, `reports_wound_only/`
 - **Data:** Shared at `../../data` (not copied here)
 
 ---
@@ -20,7 +20,21 @@ It is **not currently reliable** for robust fine-grained multi-class segmentatio
 
 ---
 
-## Training (Primary: Notebook)
+## Training
+
+### Wound-only baseline (recommended)
+
+After building the wound-only dataset (`scripts/build_wound_only_dataset.py`):
+
+```bash
+python validate_wound_only_dataset.py   # Pre-training validation
+python train_wound_only.py              # Full training
+python train_wound_only.py --epochs 1   # Quick sanity check
+```
+
+Outputs: `checkpoints_wound_only/`, `results_wound_only/`, `reports_wound_only/`
+
+### Multi-class (notebook / CLI)
 
 **Recommended:** Use `training_pipeline.ipynb` — open from this folder, set Kernel cwd to `experiments/maskrcnn`, run cells in order. Edit CONFIG (Part 2) for `data_mode`, `batch_size`, etc.
 

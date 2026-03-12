@@ -85,6 +85,16 @@ Wound-infection-detection-model/
 │       ├── annotations_augmented.json
 │       └── images/
 │
+├── experiments/
+│   └── maskrcnn/                  # Mask R-CNN experiments
+│       ├── train_model.py         # Multi-class training
+│       ├── train_wound_only.py    # Wound-only baseline (recommended)
+│       ├── validate_wound_only_dataset.py
+│       ├── pipeline_utils.py
+│       ├── checkpoints_wound_only/
+│       ├── results_wound_only/
+│       └── reports_wound_only/
+│
 ├── notebooks/
 │   ├── train_model.py             # Unified training script
 │   ├── training_pipeline.ipynb    # Training and analysis notebook
@@ -170,6 +180,26 @@ CONFIG = {
 }
 ```
 
+### Wound-only segmentation baseline (recommended)
+
+After building the wound-only dataset (see Data Preparation), run the dedicated wound-only baseline:
+
+```bash
+cd experiments/maskrcnn
+python train_wound_only.py
+```
+
+**Prerequisites:** Run `build_wound_focus_dataset.py` and `build_wound_only_dataset.py` first.
+
+**Outputs:**
+- `checkpoints_wound_only/` — best model, last checkpoint, training history
+- `results_wound_only/` — metrics, plots, qualitative predictions
+- `reports_wound_only/` — `wound_only_training_report.md`, `review_summary_for_chatgpt.md`
+
+**Validation:** Run `python validate_wound_only_dataset.py` before training to verify dataset integrity.
+
+**Quick test:** `python train_wound_only.py --epochs 1` for a single-epoch sanity check.
+
 ---
 
 ## Data Preparation
@@ -237,6 +267,9 @@ python apply_augmentation_only.py
 
 | Script | Purpose |
 |--------|---------|
+| `experiments/maskrcnn/train_wound_only.py` | Wound-only segmentation baseline (recommended) |
+| `experiments/maskrcnn/validate_wound_only_dataset.py` | Pre-training dataset validation |
+| `experiments/maskrcnn/train_model.py` | Multi-class training |
 | `notebooks/train_model.py` | Unified training, evaluation, and inference |
 | `notebooks/training_pipeline.ipynb` | Interactive training and analysis |
 | `scripts/build_wound_focus_dataset.py` | Safe image renaming and mapping pipeline |

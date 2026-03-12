@@ -33,6 +33,10 @@ TARGET_CLASSES_NAMES = [
     "Фибрин",                 # 7. Fibrin
     "Гнойное отделяемое"      # 8. Pus
 ]
+
+# Wound-only mode: single class for wound-only segmentation baseline
+WOUND_ONLY_CLASSES = ["wound"]
+
 # ============================================================================
 
 def set_seed(seed: int = 42):
@@ -60,10 +64,17 @@ class WoundDataset(Dataset):
     Dataset for Wound Infection Detection.
     Expects COCO-style annotations and an image directory.
     """
-    def __init__(self, root: str, annotation_file: str, transforms: Optional[A.Compose] = None):
+    def __init__(
+        self,
+        root: str,
+        annotation_file: str,
+        transforms: Optional[A.Compose] = None,
+        target_classes: Optional[List[str]] = None,
+    ):
         self.root = Path(root)
         self.transforms = transforms
         self.ann_file = annotation_file
+        self._target_classes = target_classes if target_classes is not None else TARGET_CLASSES_NAMES
         
         # Load annotations using COCO API if available, otherwise use dict
         if HAS_COCO:
@@ -139,22 +150,22 @@ class WoundDataset(Dataset):
         cats = self.coco_json.get('categories', [])
         
         # Create mapping only for target classes
-        print(f"Filtering classes. Keeping only: {TARGET_CLASSES_NAMES}")
+        print(f"Filtering classes. Keeping only: {self._target_classes}")
         for cat in cats:
-            if cat['name'] in TARGET_CLASSES_NAMES:
+            if cat['name'] in self._target_classes:
                 # Assign new ID (1, 2, 3...)
-                # We want a consistent order, so let's use the order in TARGET_CLASSES_NAMES
+                # We want a consistent order, so let's use the order in _target_classes
                 try:
-                    new_id = TARGET_CLASSES_NAMES.index(cat['name']) + 1
+                    new_id = self._target_classes.index(cat['name']) + 1
                     self.class_mapping[cat['id']] = new_id
                     print(f"  - Class '{cat['name']}' (ID {cat['id']}) mapped to New ID {new_id}")
                 except ValueError:
                     continue
         
-        # Single source of truth for model head size: background (0) + len(TARGET_CLASSES_NAMES).
+        # Single source of truth for model head size: background (0) + len(_target_classes).
         # Model must use this num_classes; using len(coco_json['categories'])+1 causes head/label mismatch and near-zero AP.
-        self.num_classes = len(TARGET_CLASSES_NAMES) + 1  # +1 for background
-        self.target_class_names = list(TARGET_CLASSES_NAMES)
+        self.num_classes = len(self._target_classes) + 1  # +1 for background
+        self.target_class_names = list(self._target_classes)
         print(f"Total classes for training: {self.num_classes} (including background)")
 
         self.ids = list(self.images.keys())
@@ -563,17 +574,18 @@ def get_transforms(
         ], bbox_params=A.BboxParams(format='coco', label_fields=['labels']))
 
 def create_dataset(
-    root: str, 
-    annotation_file: str, 
-    train: bool = True, 
+    root: str,
+    annotation_file: str,
+    train: bool = True,
     image_size: Tuple[int, int] = (512, 512),
     use_medical_augmentation: bool = False,
     preserve_marker: bool = True,
-    intensity: str = "moderate"
+    intensity: str = "moderate",
+    target_classes: Optional[List[str]] = None,
 ) -> Dataset:
     """
     Factory function to create the dataset.
-    
+
     Args:
         root: Root directory for images
         annotation_file: Path to annotation file
@@ -582,6 +594,8 @@ def create_dataset(
         use_medical_augmentation: If True, uses comprehensive medical augmentation strategy
         preserve_marker: If True, limits transforms that could distort marker geometry
         intensity: Augmentation intensity ("light", "moderate", "aggressive")
+        target_classes: If None, use TARGET_CLASSES_NAMES (multi-class). If provided (e.g. ["wound"]),
+            use only those categories (wound-only mode).
     """
     transforms = get_transforms(
         train=train,
@@ -590,7 +604,7 @@ def create_dataset(
         preserve_marker=preserve_marker,
         intensity=intensity
     )
-    dataset = WoundDataset(root, annotation_file, transforms)
+    dataset = WoundDataset(root, annotation_file, transforms, target_classes=target_classes)
     return dataset
 
 def collate_fn(batch):
