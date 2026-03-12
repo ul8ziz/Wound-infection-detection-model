@@ -1,0 +1,2 @@
+global_id,task_id,original_local_path,original_local_filename,manifest_path,source_name_from_manifest,new_filename,infection_status,annotation_available,status,notes,skip_reason
+,13,original_data/task_13/data/547b0215-049d-4ab7-980d-91af1aaab287.jfif,547b0215-049d-4ab7-980d-91af1aaab287.jfif,original_data/task_13/data/manifest.jsonl,547b0215-049d-4ab7-980d-91af1aaab287,,,True,skipped,"Extension .jfif not in {'.jpeg', '.jpg', '.png'}",non_image

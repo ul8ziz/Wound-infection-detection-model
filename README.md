@@ -1,518 +1,259 @@
-# 🏥 Wound Infection Detection
+# Wound Infection Detection
 
-**كشف علامات العدوى في الجروح الجراحية باستخدام Deep Learning**
-
-## ⚡ البيئة الموصى بها
-
-**⚠️ مهم:** هذا المشروع يستخدم بيئة `.venv_cuda` مع:
-- **Python 3.12.10**
-- **PyTorch 2.5.1+cu121** (مع دعم CUDA)
-- **CUDA 12.1**
-
-البيئة جاهزة للاستخدام مع GPU (NVIDIA GeForce RTX 4060 أو أفضل).
-
-## ⭐ مشروع منظم مع سكريبتات Python و Jupyter Notebooks
-
-**`notebooks/train_model.py`** - سكريبت تدريب موحد شامل  
-**`notebooks/training_pipeline.ipynb`** - Notebook للتدريب والتحليل
+**Detecting and analyzing postoperative wound infections from clinical photographs using deep learning**
 
 ---
 
-## 📁 هيكل المشروع
+## Overview
+
+This repository contains an experimental pipeline for **wound detection**, **wound segmentation**, and **infected vs. non-infected wound analysis** from clinical photographs. The project uses Mask R-CNN for instance segmentation and focuses on:
+
+1. **Wound isolation** — segmenting the wound region from surrounding tissue  
+2. **Infection presence assessment** — distinguishing infected from non-infected wounds  
+3. **Dataset review and annotation-quality assessment** — evaluating the suitability of available annotations for training  
+4. **Reproducible training and evaluation** — a structured pipeline for experiments
+
+The work is part of a Master's thesis on postoperative wound infection detection. It is **research-oriented** and not intended for clinical use without proper validation.
+
+---
+
+## Revised Project Scope
+
+This project's scope was refined after reviewing training results and dataset annotations. Manual inspection of the dataset revealed that:
+
+- **Wound isolation** and **infection presence** (infected vs. non-infected) are realistic and well-supported goals.
+- **Fine-grained multi-class segmentation** of infection subclasses (e.g., fibrin, granulation, edema, hyperemia, necrosis) is **not reliably achievable** with the current dataset due to inconsistent and imprecise annotations.
+
+The project therefore focuses on wound detection, wound segmentation, and infection presence analysis rather than detailed subclass segmentation.
+
+---
+
+## Dataset Interpretation
+
+The dataset consists of clinical photographs with polygon annotations in COCO format:
+
+- **Polygon annotations** — available for wound regions and related structures.
+- **Infection status** — file names containing `-not-` indicate **no infection**; absence of `-not-` indicates **infected**.
+- **Label semantics** — many labels appear to represent broader wound-related zones rather than precise pathology masks. Manual inspection of annotations suggests that secondary subclasses (fibrin, granulation, edema, hyperemia, necrosis) are inconsistent or incomplete.
+
+**Conclusion:** The dataset is more suitable for **wound-region analysis** and **infection presence assessment** than for reliable fine-grained subclass segmentation. Training for detailed subclass masks may require additional annotation cleaning, relabeling, or a better source of annotations.
+
+---
+
+## Objectives
+
+1. **Isolate the wound region** — segment the wound boundary from surrounding tissue.
+2. **Analyze infected vs. non-infected wounds** — study visual differences between infected and non-infected cases.
+3. **Build a reproducible training and evaluation pipeline** — structured experiments with Mask R-CNN.
+4. **Identify dataset limitations** — assess annotation quality and suitability for different tasks.
+
+---
+
+## Current Status / Experimental Findings
+
+- **Training pipeline** — improved and functional; training runs complete successfully.
+- **Training loss** — stable convergence during training.
+- **Detection metrics** — weak; detection performance (e.g., bbox AP) is below expectations.
+- **Segmentation metrics** — near-zero segmentation performance (segm AP) for detailed subclasses, indicating that the current annotations are not sufficient for reliable multi-class segmentation.
+- **Manual dataset inspection** — performed using a COCO dataset viewer; findings suggest that annotation quality is a major limiting factor.
+- **Dataset status** — the dataset may require cleaning, relabeling, or a better source for detailed subclass segmentation.
+
+---
+
+## Repository Structure
 
 ```
 Wound-infection-detection-model/
-├── data/                          # البيانات (241 task)
-│   ├── task_0/ ... task_240/      # البيانات الأصلية
-│   ├── project.json
-│   ├── annotations.json           # جميع البيانات (COCO format)
-│   ├── splits/                    # تقسيمات البيانات
+├── data/
+│   ├── original_data/             # Raw data (241 CVAT tasks)
+│   │   ├── task_0/ ... task_240/  # Task folders with images and annotations
+│   │   ├── project.json
+│   │   ├── annotations_cleaned.json
+│   │   └── annotations_raw.json
+│   ├── splits/                    # Train/val/test splits
 │   │   ├── train.json
 │   │   ├── val.json
 │   │   └── test.json
-│   └── augmented/                 # البيانات المعززة (اختياري)
+│   ├── wound_focus_clean/         # Standardized image set (from build_wound_focus_dataset)
+│   │   ├── images/
+│   │   ├── mappings/
+│   │   └── reports/
+│   └── augmented/                 # Augmented data (optional)
 │       ├── annotations_augmented.json
 │       └── images/
 │
 ├── notebooks/
-│   ├── train_model.py             # ⭐⭐ سكريبت التدريب الموحد (يدمج جميع وظائف التدريب)
-│   ├── training_pipeline.ipynb    # Notebook للتدريب والتحليل
-│   ├── pipeline_utils.py          # دوال معالجة البيانات
-│   └── INFERENCE_GUIDE.md         # دليل الاستدلال والتحليل
+│   ├── train_model.py             # Unified training script
+│   ├── training_pipeline.ipynb    # Training and analysis notebook
+│   ├── pipeline_utils.py          # Data utilities and dataset classes
+│   └── INFERENCE_GUIDE.md         # Inference usage guide
 │
-├── scripts/                        # سكريبتات مساعدة
-│   ├── apply_augmentation_only.py # تطبيق augmentation على البيانات
-│   └── augmentation_strategy.py   # استراتيجية augmentation
+├── scripts/
+│   ├── build_wound_focus_dataset.py  # Safe image renaming and mapping pipeline
+│   ├── apply_augmentation_only.py    # Offline augmentation
+│   └── augmentation_strategy.py     # Augmentation strategy
 │
-├── docs/                           # التوثيق
-│   └── DATA_AUGMENTATION_GUIDE.md  # دليل augmentation
+├── docs/
+│   ├── WOUND_FOCUS_DATASET_DOCUMENTATION.md  # Dataset pipeline documentation
+│   └── DATA_AUGMENTATION_GUIDE.md  # Augmentation guide
 │
-├── checkpoints/                    # النماذج المحفوظة (يُنشأ عند التدريب)
-│   ├── best.pt                     # أفضل نموذج
-│   └── last.pt                     # آخر checkpoint
-├── checkpoints_medical_aug/        # نماذج مع medical augmentation
-│
-├── results/                        # النتائج (بعد Inference)
-│   └── *_result.json
-│
-├── requirements.txt                # المكتبات
-└── README.md                       # هذا الملف
+├── checkpoints/                   # Saved models (created during training)
+├── requirements.txt
+└── README.md
 ```
 
 ---
 
-## 🚀 البدء السريع
+## Installation
 
-### 1. التثبيت
-
-#### 🐍 الطريقة الموصى بها: بيئة Python مع دعم CUDA
-
-**⚠️ مهم:** هذا المشروع يستخدم بيئة `.venv_cuda` مع Python 3.12 و PyTorch مع دعم CUDA.
+**Recommended:** Python 3.12+ with PyTorch and CUDA support.
 
 **Windows:**
 ```powershell
-# إنشاء البيئة مع Python 3.12 (إذا لم تكن موجودة)
 py -3.12 -m venv .venv_cuda
-
-# تفعيل البيئة
 .venv_cuda\Scripts\Activate.ps1
-
-# تثبيت PyTorch مع CUDA
 python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-
-# تثبيت باقي المكتبات
 python -m pip install -r requirements.txt
-
-# إعداد Jupyter Kernel
-python -m ipykernel install --user --name=venv_cuda --display-name="Python 3.12 (CUDA)"
 ```
 
 **Linux/Mac:**
 ```bash
-# إنشاء البيئة مع Python 3.12
 python3.12 -m venv .venv_cuda
-
-# تفعيل البيئة
 source .venv_cuda/bin/activate
-
-# تثبيت PyTorch مع CUDA
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-
-# تثبيت باقي المكتبات
 pip install -r requirements.txt
-
-# إعداد Jupyter Kernel
-python -m ipykernel install --user --name=venv_cuda --display-name="Python 3.12 (CUDA)"
 ```
 
-> **💡 الأفضل:** استخدم بيئة Python منفصلة لكل مشروع مع دعم CUDA
-
-#### 📝 التحقق من CUDA
-
-بعد التثبيت، تحقق من أن CUDA يعمل:
+**Verify CUDA:**
 ```python
 import torch
-print(f"CUDA available: {torch.cuda.is_available()}")
-print(f"GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'N/A'}")
+print(torch.cuda.is_available())
+print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else "N/A")
 ```
 
-**النتيجة المتوقعة:**
-```
-CUDA available: True
-GPU: NVIDIA GeForce RTX 4060 Laptop GPU
-```
+---
 
-#### 📝 الطريقة اليدوية (Anaconda)
+## Training Pipeline
 
-إذا كنت تستخدم Anaconda:
+### Quick start
+
 ```bash
-# 1. PyTorch (مع CUDA 12.1)
-conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia -y
-
-# 2. المكتبات الأخرى
-conda install opencv numpy pandas matplotlib seaborn -y
-pip install -r requirements.txt
-```
-
-> **💡 نصيحة:** الأفضل استخدام بيئة `.venv_cuda` مع Python 3.12
-
-### 2. طريقة الاستخدام
-
-#### الطريقة 1: سكريبت Python (موصى به) 🚀
-
-**التدريب المباشر (يستخدم GPU تلقائياً عند توفّر CUDA):**
-```bash
-# من مجلد notebooks
 cd notebooks
 python train_model.py
 ```
 
-**أو من جذر المشروع:**
+Or use the Jupyter notebook:
+
 ```bash
-python notebooks/train_model.py
-```
-
-#### الطريقة 2: Jupyter Notebook
-
-**الطريقة الموصى بها:**
-```powershell
-# تفعيل البيئة
-.venv_cuda\Scripts\Activate.ps1
-
-# تشغيل Jupyter
 jupyter notebook notebooks/training_pipeline.ipynb
 ```
 
-**⚠️ مهم:** في Jupyter Notebook:
-1. افتح `training_pipeline.ipynb`
-2. اختر **Kernel → Change Kernel → Python 3.12 (CUDA)**
-3. شغّل الخلايا - سيتم استخدام GPU تلقائياً
-
-**أو يدوياً:**
-```bash
-# تفعيل البيئة أولاً
-# Windows: .venv_cuda\Scripts\activate
-# Linux/Mac: source .venv_cuda/bin/activate
-
-jupyter notebook notebooks/training_pipeline.ipynb
-```
-
-### 3. شغّل الخلايا بالترتيب (في Notebook)
-
-1. ✅ **Setup**: Import + Config
-2. ⭐ **Data Loading**: تحميل البيانات
-3. ✅ **Model Building**: بناء النموذج
-4. ⭐⭐ **Training**: التدريب (4-6 ساعات)
-5. ✅ **Evaluation**: التقييم
-6. ⭐ **Inference**: التنبؤ والتحليل
-
----
-
-## 📝 محتويات المشروع
-
-### `train_model.py` - سكريبت التدريب الموحد
-
-هذا الملف يدمج جميع وظائف التدريب في مكان واحد:
-
-**وظائف بناء النموذج:**
-- `build_model()` - بناء نموذج Mask R-CNN
-
-**وظائف التدريب:**
-- `train_one_epoch()` - تدريب epoch واحد
-- `validate_one_epoch()` - التحقق من epoch واحد
-- `main()` - دالة التدريب الرئيسية الكاملة
-
-**وظائف التقييم:**
-- `evaluate_metrics()` - تقييم المقاييس (COCO metrics)
-
-**وظائف Checkpoints:**
-- `save_checkpoint()` - حفظ checkpoint
-- `load_checkpoint()` - تحميل checkpoint
-
-**وظائف Inference:**
-- `run_inference()` - تشغيل inference على صورة واحدة
-- `run_wound_inference()` - inference خاص بحساب مساحة الجرح والعدوى
-
-**وظائف التقارير:**
-- `generate_report()` - توليد تقرير Markdown شامل
-
-### `training_pipeline.ipynb` - Notebook للتدريب
-
-**Setup & Configuration:**
-- Import libraries
-- CONFIG dictionary - عدّل الإعدادات هنا
-
-**Data Loading:**
-- تحميل البيانات من `data/splits/` أو `data/augmented/`
-- دعم البيانات المعززة
-
-**Model Building:**
-- بناء النموذج باستخدام `train_model.build_model()`
-- إعداد Optimizer & Scheduler
-
-**Training:**
-- حلقة التدريب الكاملة
-- حفظ checkpoints تلقائياً
-
-**Evaluation & Inference:**
-- تقييم النموذج
-- تشغيل inference على صور جديدة
-- حساب مساحة الجرح وكشف العدوى
-
----
-
-## ⚙️ التخصيص
-
-### في `train_model.py`:
-
-عدّل `CONFIG` في الملف:
+**Configuration:** Edit `CONFIG` in `train_model.py` or `training_pipeline.ipynb`:
 
 ```python
 CONFIG = {
-    # Data paths
     "data_root": "../data",
     "ann_file_train": "../data/splits/train.json",
     "ann_file_val": "../data/splits/val.json",
-    
-    # Training settings (uses GPU/CUDA when available)
-    "device_prefer_cuda": True,
     "output_dir": "../checkpoints_medical_aug",
-    "seed": 42,
     "batch_size": 4,
     "epochs": 50,
     "lr": 0.005,
     "image_size": (512, 512),
-    
-    # Medical Augmentation
     "use_medical_augmentation": True,
     "preserve_marker": True,
-    "intensity": "moderate"  # "light", "moderate", "aggressive"
-}
-```
-
-### في `training_pipeline.ipynb`:
-
-عدّل `CONFIG` في الخلية الأولى:
-
-```python
-CONFIG = {
-    "epochs": 50,
-    "batch_size": 4,
-    "lr": 0.005,
-    "image_size": (512, 512),
-    "device": "cuda" if torch.cuda.is_available() else "cpu",  # استخدام GPU عند التدريب
-    "use_medical_augmentation": False,  # True للـ augmentation أثناء التدريب
 }
 ```
 
 ---
 
-## 📊 المخرجات
+## Data Preparation
 
-### بعد تحضير البيانات:
-- `data/annotations.json` - كل البيانات (COCO format)
-- `data/splits/train.json` - بيانات التدريب
-- `data/splits/val.json` - بيانات التحقق
-- `data/splits/test.json` - بيانات الاختبار
-- `data/augmented/` - البيانات المعززة (اختياري)
+### Build wound focus dataset
 
-### بعد التدريب:
-- `checkpoints_medical_aug/best.pt` - أفضل نموذج
-- `checkpoints_medical_aug/last.pt` - آخر checkpoint
-- `checkpoints_medical_aug/training_results.json` - نتائج التدريب
-- `checkpoints_medical_aug/training_report.md` - تقرير شامل  
-
-(أو مجلد `checkpoints/` إذا غيّرت `output_dir` في CONFIG)
-
-### بعد Inference:
-```json
-{
-  "wound_area_cm2": 25.3,
-  "has_infection": true,
-  "infection_confidence": 0.87,
-  "findings": {
-    "edema": true,
-    "hyperemia": true,
-    "necrosis": false,
-    "granulation": true,
-    "fibrin": true
-  }
-}
+```bash
+cd scripts
+python build_wound_focus_dataset.py --data-root ../data --output-dir ../data/wound_focus_clean
+python build_wound_focus_dataset.py --copy   # Copy images after validating mapping
 ```
 
----
+See `docs/WOUND_FOCUS_DATASET_DOCUMENTATION.md` for details.
 
-## 🎯 ما يكتشفه النظام
+### Apply augmentation
 
-### العلامات الـ 16:
-
-1. **AllWound** - كامل الجرح
-2. **Fibrin** - الفيبرين
-3. **SutureZone** - منطقة الخياطة
-4. **EdemaZone** - الوذمة (علامة عدوى) ⚠️
-5. **HyperemiaZone** - الاحتقان (علامة عدوى) ⚠️
-6. **NecrosisZone** - النخر (علامة عدوى) ⚠️
-7. **GranulationZone** - التحبب
-8. **SizeMarker** - علامة القياس (3×3 سم)
-9. وأكثر...
-
----
-
-## 💡 نصائح
-
-### إذا واجهت CUDA Out of Memory:
-```python
-# في Part 2، عدّل CONFIG:
-CONFIG['batch_size'] = 1
-CONFIG['image_size'] = [800, 800]
-```
-
-### للتدريب السريع:
-```python
-CONFIG['epochs'] = 10  # بدلاً من 50
-```
-
-### لمراقبة التدريب:
-راقب الـ output في Notebook - سترى الـ loss ينخفض!
-
----
-
-## 📈 النتائج المتوقعة
-
-مع GPU (RTX 4060 أو أفضل):
-- ⏱️ **التدريب**: 4-6 ساعات (50 epochs) على GPU
-- ⏱️ **التدريب على CPU**: 20-30 ساعة (50 epochs) - **غير موصى به**
-- 🎯 **mAP**: ~70-80%
-- 🔍 **Infection Detection**: ~85%
-
-**⚠️ مهم:** استخدم البيئة `.venv_cuda` للاستفادة من GPU وتقليل وقت التدريب بشكل كبير!
-
----
-
-## 🆘 استكشاف الأخطاء
-
-### ❌ CUDA غير متاح / PyTorch CPU-only
-
-**المشكلة:** PyTorch مثبت بدون دعم CUDA
-
-**الحل:**
-1. تأكد من استخدام البيئة `.venv_cuda` (Python 3.12)
-2. أعد تثبيت PyTorch مع CUDA:
-   ```powershell
-   .venv_cuda\Scripts\Activate.ps1
-   pip uninstall torch torchvision -y
-   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-   ```
-3. تحقق من CUDA:
-   ```python
-   import torch
-   print(torch.cuda.is_available())  # يجب أن يطبع True
-   ```
-
-### ❌ ERROR: Unknown compiler / Preparing metadata failed
-
-**المشكلة:** numpy يحاول البناء من المصدر (يتطلب Visual Studio)
-
-**الحل:**
-1. استخدم البيئة `.venv_cuda` (Python 3.12) - تحتوي على wheels جاهزة
-2. أو شغّل: `pip install --only-binary :all: numpy scipy`
-
-### ❌ ERROR: Could not install packages - WinError 32
-
-**المشكلة:** pip لا يمكنه الوصول للملفات (مستخدمة من قبل عملية أخرى)
-
-**الحل:**
-1. **أغلق Jupyter Notebook** إذا كان مفتوحاً
-2. **أغلق جميع نوافذ Terminal**
-3. أعد المحاولة بعد إغلاق جميع العمليات
-4. أو استخدم: `taskkill /F /IM python.exe` ثم أعد المحاولة
-
-### ❌ ValueError: numpy.dtype size changed
-
-**المشكلة:** تعارض بين numpy و scipy
-
-**الحل:**
-1. شغّل **Part 0.5** في Notebook (يصلح المشكلة تلقائياً)
-2. أعد تشغيل Kernel: `Kernel → Restart`
-
-### خطأ في تحميل البيانات؟
-تأكد أن مجلد `data/` يحتوي على:
-- `task_0/`, `task_1/`, ... `task_240/`
-- `project.json`
-
-### الـ loss لا ينخفض؟
-- قلل `learning_rate` إلى 0.0005
-- زد `epochs` إلى 100
-- تأكد من البيانات صحيحة
-
-### النموذج بطيء جداً؟
-- قلل `image_size`
-- قلل `batch_size`
-- استخدم GPU أقوى
-
----
-
-## 📚 المراجع
-
-- **Mask R-CNN**: Instance Segmentation
-- **PyTorch**: Framework التدريب
-- **COCO Format**: صيغة البيانات
-
----
-
-## 👨‍💻 المطور
-
-مشروع رسالة ماجستير - كشف العدوى في الجروح الجراحية
-
----
-
-**ملاحظة**: هذا مشروع بحثي. لا تستخدمه للقرارات الطبية الحقيقية دون استشارة طبية!
-
----
-
-## 🎉 خلاصة
-
-```
-1 Jupyter Notebook = مشروع كامل
-كل شيء منظم وواضح
-جاهز للاستخدام فوراً
-```
-
-**ابدأ الآن!** 🚀
-
-**الطريقة السريعة (سكريبت Python):**
-```powershell
-# تفعيل البيئة
-.venv_cuda\Scripts\Activate.ps1
-
-# تشغيل التدريب
-cd notebooks
-python train_model.py
-```
-
-**أو باستخدام Jupyter Notebook:**
-```powershell
-# تفعيل البيئة
-.venv_cuda\Scripts\Activate.ps1
-
-# تشغيل Jupyter
-jupyter notebook notebooks/training_pipeline.ipynb
-
-# ⚠️ مهم: اختر Kernel → Change Kernel → Python 3.12 (CUDA)
-```
-
----
-
-## 📚 الملفات الرئيسية
-
-### `notebooks/train_model.py`
-سكريبت Python موحد يحتوي على جميع وظائف التدريب والتقييم والاستدلال. يمكن تشغيله مباشرة أو استيراد دواله في notebooks أخرى.
-
-**الاستخدام:**
-```python
-# تشغيل مباشر
-python notebooks/train_model.py
-
-# أو استيراد الدوال
-from train_model import build_model, train_one_epoch, evaluate_metrics
-```
-
-### `notebooks/pipeline_utils.py`
-دوال معالجة البيانات وإنشاء datasets:
-- `create_dataset()` - إنشاء PyTorch Dataset
-- `make_dataloaders()` - إنشاء DataLoaders
-- `get_transforms()` - تحويلات الصور
-- `WoundDataset` - Dataset class
-
-### `scripts/apply_augmentation_only.py`
-سكريبت لتطبيق augmentation على البيانات وحفظها:
 ```bash
 cd scripts
 python apply_augmentation_only.py
 ```
 
-### `docs/DATA_AUGMENTATION_GUIDE.md`
-دليل شامل لاستراتيجية augmentation الطبية.
+---
 
-### `notebooks/INFERENCE_GUIDE.md`
-دليل استخدام وظائف inference والتحليل.
+## Results Summary
+
+| Aspect | Status |
+|--------|--------|
+| Training | Runs successfully; loss converges |
+| Detection (bbox) | Weak; below expectations |
+| Segmentation (subclasses) | Near-zero; annotation quality limits performance |
+| Inference | Pipeline outputs wound area, infection presence, and confidence |
+
+**Note:** The inference output structure includes `findings` for subclasses (edema, hyperemia, necrosis, etc.), but these should not be interpreted as reliable multi-class segmentations given the current dataset limitations.
+
+---
+
+## Limitations
+
+1. **Dataset annotation quality** — subclasses are inconsistent or imprecise; not suitable for reliable fine-grained segmentation.
+2. **Model performance** — detection and segmentation metrics are weak; near-zero segmentation AP for subclasses.
+3. **Research use only** — not validated for clinical deployment.
+4. **Infection status** — derived from file naming (`-not-` convention); no independent clinical labels.
+
+---
+
+## Future Work
+
+- **Dataset cleaning** — improve annotation consistency and precision.
+- **Annotation verification** — manual review and correction of subclasses.
+- **Simplification** — focus on wound-only segmentation if subclass data remains insufficient.
+- **Infection classification** — binary infected vs. non-infected classification as a primary task.
+- **Subclass segmentation** — consider detailed subclass segmentation only if better annotations become available.
+
+---
+
+## Key Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `notebooks/train_model.py` | Unified training, evaluation, and inference |
+| `notebooks/training_pipeline.ipynb` | Interactive training and analysis |
+| `scripts/build_wound_focus_dataset.py` | Safe image renaming and mapping pipeline |
+| `scripts/apply_augmentation_only.py` | Offline augmentation |
+| `scripts/augmentation_strategy.py` | Medical augmentation strategy |
+
+---
+
+## Troubleshooting
+
+**CUDA not available:**
+```bash
+pip uninstall torch torchvision -y
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+```
+
+**Data loading errors:** Ensure `data/original_data/` contains `task_0/` ... `task_240/` and `project.json`.
+
+**Out of memory:** Reduce `batch_size` or `image_size` in CONFIG.
+
+---
+
+## References
+
+- **Mask R-CNN** — Instance segmentation
+- **PyTorch** — Training framework
+- **COCO format** — Annotation format
+
+---
+
+## Disclaimer
+
+This is a **research project.** Do not use it for clinical decisions without proper validation and medical supervision.
