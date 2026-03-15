@@ -1,8 +1,8 @@
 # Wound-Only Segmentation Training Report
 
-**Generated:** (Run `python train_wound_only.py` to populate)
+**Generated:** (Run `python train_model.py` to populate)
 
-This report is auto-generated when wound-only baseline training completes. See `train_wound_only.py` for the training script.
+This report is auto-generated when wound-only baseline training completes. See `train_model.py` for the training script.
 
 ## Purpose of This Stage
 
@@ -49,7 +49,7 @@ Previous multi-class (8 classes) had near-zero segm_AP for subclasses due to ann
 
 ## Qualitative Prediction Observations
 
-See `results_wound_only/predictions/` for example predictions.
+See `results/predictions/` for example predictions.
 
 ## Issues Found
 

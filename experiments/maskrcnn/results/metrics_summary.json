@@ -1,0 +1,46 @@
+{
+  "best_validation": {
+    "combined_AP50": 0.42428164506576566,
+    "bbox_AP50": 0.5116641281641117,
+    "segm_AP50": 0.33689916196741965,
+    "best_epoch": 13
+  },
+  "test": {
+    "bbox_AP": 0.1657544523613296,
+    "bbox_AP50": 0.3986663064434791,
+    "bbox_AP75": 0.0822322288155299,
+    "segm_AP": 0.06385539962641994,
+    "segm_AP50": 0.2399303271124456,
+    "segm_AP75": 0.003156987709354647,
+    "combined_AP50": 0.3192983167779624
+  },
+  "config": {
+    "data_root": "E:\\GitHub\\Wound-infection-detection-model\\data\\wound_focus_clean",
+    "ann_file_train": "E:\\GitHub\\Wound-infection-detection-model\\data\\wound_focus_clean\\train_wound_only.json",
+    "ann_file_val": "E:\\GitHub\\Wound-infection-detection-model\\data\\wound_focus_clean\\val_wound_only.json",
+    "ann_file_test": "E:\\GitHub\\Wound-infection-detection-model\\data\\wound_focus_clean\\test_wound_only.json",
+    "output_dir": "E:\\GitHub\\Wound-infection-detection-model\\experiments\\maskrcnn\\checkpoints",
+    "results_dir": "E:\\GitHub\\Wound-infection-detection-model\\experiments\\maskrcnn\\results",
+    "reports_dir": "E:\\GitHub\\Wound-infection-detection-model\\experiments\\maskrcnn\\reports",
+    "seed": 42,
+    "batch_size": 2,
+    "num_workers": 0,
+    "epochs": 50,
+    "lr": 0.001,
+    "image_size": [
+      512,
+      512
+    ],
+    "early_stop_patience": 12,
+    "early_stop_min_delta": 0.003,
+    "loss_clip_max": 100.0,
+    "loss_skip_threshold": 1000.0,
+    "skip_invalid_targets": true,
+    "device_prefer_cuda": true,
+    "use_medical_augmentation": true,
+    "preserve_marker": true,
+    "intensity": "moderate",
+    "num_qualitative_samples": 8,
+    "conf_thresh_qualitative": 0.5
+  }
+}

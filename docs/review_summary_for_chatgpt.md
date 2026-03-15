@@ -1,6 +1,6 @@
 # Wound-Only Segmentation Baseline — Review Summary for ChatGPT
 
-**Status:** Pipeline prepared. Final training results must be populated after running `python train_wound_only.py`.
+**Status:** Pipeline prepared. Final training results must be populated after running `python train_model.py`.
 
 ## What Was Implemented
 
@@ -51,8 +51,8 @@ Final confirmation still depends on actual wound-only training results and quali
 
 ## Recommended Next Action
 
-1. Run `python train_wound_only.py`
+1. Run `python train_model.py`
 2. Populate the final validation and test metrics
-3. Review qualitative predictions in `results_wound_only/predictions/`
+3. Review qualitative predictions in `results/predictions/`
 4. Compare wound-only segmentation results against the earlier multi-class baseline
 5. If wound-only results are acceptable, proceed to infected vs non-infected classification

@@ -24,7 +24,7 @@ import cv2
 import numpy as np
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-PROJECT_ROOT = SCRIPT_DIR.parent.parent
+PROJECT_ROOT = SCRIPT_DIR.parent  # scripts/ is inside project root
 
 # Expected paths (relative to project root)
 DATA_ROOT = PROJECT_ROOT / "data" / "wound_focus_clean"

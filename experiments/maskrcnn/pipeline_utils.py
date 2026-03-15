@@ -170,8 +170,6 @@ class WoundDataset(Dataset):
 
         self.ids = list(self.images.keys())
 
-        self.ids = list(self.images.keys())
-
     def __len__(self) -> int:
         return len(self.ids)
 

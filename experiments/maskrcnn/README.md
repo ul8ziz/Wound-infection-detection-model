@@ -2,8 +2,8 @@
 
 This folder contains the **code and outputs** for the Mask R-CNN wound detection experiment.
 
-- **Code:** `training_pipeline.ipynb`, `train_model.py`, `train_wound_only.py`, `validate_wound_only_dataset.py`, `pipeline_utils.py` (augmentation from `scripts/augmentation_strategy.py`)
-- **Outputs:** `checkpoints/` (multi-class), `checkpoints_wound_only/` (wound-only baseline), `results_wound_only/`, `reports_wound_only/`
+- **Code:** `training_pipeline.ipynb` (main), `train_model.py` (CLI + all helpers), `validate_wound_only_dataset.py`, `pipeline_utils.py`
+- **Outputs:** `checkpoints/`, `results/`, `reports/`
 - **Data:** Shared at `../../data` (not copied here)
 
 ---
@@ -28,20 +28,15 @@ After building the wound-only dataset (`scripts/build_wound_only_dataset.py`):
 
 ```bash
 python validate_wound_only_dataset.py   # Pre-training validation
-python train_wound_only.py              # Full training
-python train_wound_only.py --epochs 1   # Quick sanity check
+python train_model.py              # Full training
+python train_model.py --epochs 1   # Quick sanity check
 ```
 
-Outputs: `checkpoints_wound_only/`, `results_wound_only/`, `reports_wound_only/`
+Outputs: `checkpoints/`, `results/`, `reports/`
 
-### Multi-class (notebook / CLI)
+### Notebook (interactive)
 
-**Recommended:** Use `training_pipeline.ipynb` — open from this folder, set Kernel cwd to `experiments/maskrcnn`, run cells in order. Edit CONFIG (Part 2) for `data_mode`, `batch_size`, etc.
-
-**Alternative CLI:**
-- `python train_model.py` (default: clean_online_aug)
-- `python train_model.py --data-mode clean_offline_aug`
-- `python train_model.py --review checkpoints`
+Use `training_pipeline.ipynb` — open from this folder, set Kernel cwd to `experiments/maskrcnn`, run cells in order. Edit CONFIG for `batch_size`, `epochs`, etc.
 
 ---
 
@@ -49,15 +44,15 @@ Outputs: `checkpoints_wound_only/`, `results_wound_only/`, `reports_wound_only/`
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| `learning_rate` | 0.001 | SGD, linear-scaled for batch_size=2 |
+| `learning_rate` | 0.001 | SGD |
 | `epochs` | 50 | Max epochs; early stopping can stop sooner |
-| `batch_size` | 2 | Single-GPU (RTX 4060) |
+| `batch_size` | 2 | Single-GPU |
 | `early_stop_patience` | 12 | Epochs without combined_AP50 improvement before stop |
-| `early_stop_min_delta` | 0.003 | Min AP improvement; early stopping is AP-based only |
-| Scheduler | LinearLR warmup (5 ep) → CosineAnnealingLR (45 ep) | Cosine decay for remaining epochs after warmup |
-| Validation set | ~106 images (82/18 split of annotations_cleaned.json) | Raised from 16 (too small for COCO AP) |
-| `image_size` | 1024×1024 | |
-| `num_classes` | 9 | background + 8 wound classes (set from dataset; do not use len(coco_json['categories'])+1) |
+| `early_stop_min_delta` | 0.003 | Min AP improvement |
+| Scheduler | StepLR (step=5, gamma=0.1) | |
+| Dataset | `data/wound_focus_clean/` | train_wound_only.json, val_wound_only.json, test_wound_only.json |
+| `image_size` | 512×512 | |
+| `num_classes` | 2 | background + wound |
 
 ---
 
