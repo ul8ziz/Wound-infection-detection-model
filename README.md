@@ -51,12 +51,12 @@ The dataset consists of clinical photographs with polygon annotations in COCO fo
 
 ## Current Status / Experimental Findings
 
-- **Training pipeline** — improved and functional; training runs complete successfully.
+- **Training pipeline** — fully refactored to wound-only segmentation; `experiments/maskrcnn/training_pipeline.ipynb` is the single main training notebook.
+- **Model** — Mask R-CNN ResNet-50-FPN with `num_classes=2` (background + wound).
+- **Dataset** — `data/wound_focus_clean/` with pre-built train/val/test splits; validated before training.
 - **Training loss** — stable convergence during training.
-- **Detection metrics** — weak; detection performance (e.g., bbox AP) is below expectations.
-- **Segmentation metrics** — near-zero segmentation performance (segm AP) for detailed subclasses, indicating that the current annotations are not sufficient for reliable multi-class segmentation.
-- **Manual dataset inspection** — performed using a COCO dataset viewer; findings suggest that annotation quality is a major limiting factor.
-- **Dataset status** — the dataset may require cleaning, relabeling, or a better source for detailed subclass segmentation.
+- **Manual dataset inspection** — performed using a COCO dataset viewer; findings suggest that annotation quality is a major limiting factor for multi-class tasks, hence the wound-only focus.
+- **Multi-class subclass segmentation** — removed from the main pipeline; annotation quality was insufficient for reliable fine-grained subclass segmentation.
 
 ---
 
@@ -87,17 +87,16 @@ Wound-infection-detection-model/
 │
 ├── experiments/
 │   └── maskrcnn/                  # Mask R-CNN experiments
-│       ├── train_model.py         # Multi-class training
-│       ├── train_wound_only.py    # Wound-only baseline (recommended)
+│       ├── training_pipeline.ipynb # Main wound-only training notebook (recommended)
+│       ├── train_model.py         # Wound-only training (CLI + all helpers)
 │       ├── validate_wound_only_dataset.py
 │       ├── pipeline_utils.py
-│       ├── checkpoints_wound_only/
-│       ├── results_wound_only/
-│       └── reports_wound_only/
+│       ├── checkpoints/
+│       ├── results/
+│       ├── reports/
+│       └── reports_wound_only/   # Improved pipeline reports
 │
 ├── notebooks/
-│   ├── train_model.py             # Unified training script
-│   ├── training_pipeline.ipynb    # Training and analysis notebook
 │   ├── pipeline_utils.py          # Data utilities and dataset classes
 │   └── INFERENCE_GUIDE.md         # Inference usage guide
 │
@@ -150,55 +149,63 @@ print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else "N/A")
 
 ## Training Pipeline
 
-### Quick start
+### Wound-only training notebook (recommended)
+
+The main training workflow is in `experiments/maskrcnn/training_pipeline.ipynb`. Run from `experiments/maskrcnn`:
 
 ```bash
-cd notebooks
+cd experiments/maskrcnn
+jupyter notebook training_pipeline.ipynb
+```
+
+**Kernel cwd:** Start Jupyter with `experiments/maskrcnn` as the working directory so paths resolve correctly.
+
+### Wound-only CLI (alternative)
+
+```bash
+cd experiments/maskrcnn
 python train_model.py
+python train_model.py --config improved   # Improved pipeline (768px, cosine LR, lighter aug)
 ```
 
-Or use the Jupyter notebook:
+**Config presets:** Use `--config baseline` (default) or `--config improved`:
 
-```bash
-jupyter notebook notebooks/training_pipeline.ipynb
-```
+| Preset | image_size | LR schedule | Augmentation | Reports |
+|--------|------------|-------------|--------------|---------|
+| baseline | 512×512 | StepLR | moderate | `reports/` |
+| improved | 768×768 | CosineAnnealingLR | light | `reports_wound_only/` |
 
-**Configuration:** Edit `CONFIG` in `train_model.py` or `training_pipeline.ipynb`:
+**Configuration:** Edit `CONFIG` in `training_pipeline.ipynb` or `train_model.py`:
 
 ```python
 CONFIG = {
-    "data_root": "../data",
-    "ann_file_train": "../data/splits/train.json",
-    "ann_file_val": "../data/splits/val.json",
-    "output_dir": "../checkpoints_medical_aug",
-    "batch_size": 4,
+    "data_root": "data/wound_focus_clean",
+    "ann_file_train": "data/wound_focus_clean/train_wound_only.json",
+    "ann_file_val": "data/wound_focus_clean/val_wound_only.json",
+    "ann_file_test": "data/wound_focus_clean/test_wound_only.json",
+    "output_dir": "checkpoints",
+    "results_dir": "results",
+    "reports_dir": "reports",
+    "batch_size": 2,
     "epochs": 50,
-    "lr": 0.005,
+    "lr": 0.001,
     "image_size": (512, 512),
     "use_medical_augmentation": True,
     "preserve_marker": True,
 }
 ```
 
-### Wound-only segmentation baseline (recommended)
-
-After building the wound-only dataset (see Data Preparation), run the dedicated wound-only baseline:
-
-```bash
-cd experiments/maskrcnn
-python train_wound_only.py
-```
-
 **Prerequisites:** Run `build_wound_focus_dataset.py` and `build_wound_only_dataset.py` first.
 
 **Outputs:**
-- `checkpoints_wound_only/` — best model, last checkpoint, training history
-- `results_wound_only/` — metrics, plots, qualitative predictions
-- `reports_wound_only/` — `wound_only_training_report.md`, `review_summary_for_chatgpt.md`
+- `checkpoints/` — best model, last checkpoint, training history
+- `results/` — metrics, plots, qualitative predictions, `baseline_vs_improved_comparison.json` (when using improved)
+- `reports/` — baseline: `wound_only_training_report.md`, `review_summary_for_chatgpt.md`
+- `reports_wound_only/` — improved: `wound_only_improved_training_report.md`, `review_summary_for_chatgpt_improved.md`
 
 **Validation:** Run `python validate_wound_only_dataset.py` before training to verify dataset integrity.
 
-**Quick test:** `python train_wound_only.py --epochs 1` for a single-epoch sanity check.
+**Quick test:** `python train_model.py --epochs 1` for a single-epoch sanity check.
 
 ---
 
@@ -236,11 +243,9 @@ python apply_augmentation_only.py
 | Aspect | Status |
 |--------|--------|
 | Training | Runs successfully; loss converges |
-| Detection (bbox) | Weak; below expectations |
-| Segmentation (subclasses) | Near-zero; annotation quality limits performance |
-| Inference | Pipeline outputs wound area, infection presence, and confidence |
-
-**Note:** The inference output structure includes `findings` for subclasses (edema, hyperemia, necrosis, etc.), but these should not be interpreted as reliable multi-class segmentations given the current dataset limitations.
+| Wound-only segmentation | Active focus; clean baseline established |
+| Multi-class subclasses | Removed from main pipeline (annotation quality) |
+| Outputs | Checkpoints, COCO metrics, training curves, qualitative predictions, markdown reports |
 
 ---
 
@@ -267,11 +272,10 @@ python apply_augmentation_only.py
 
 | Script | Purpose |
 |--------|---------|
-| `experiments/maskrcnn/train_wound_only.py` | Wound-only segmentation baseline (recommended) |
+| `experiments/maskrcnn/training_pipeline.ipynb` | **Main wound-only training notebook** |
+| `experiments/maskrcnn/train_model.py` | Wound-only training (CLI); build_model, train/val, predict_image, visualize_prediction, reports |
 | `experiments/maskrcnn/validate_wound_only_dataset.py` | Pre-training dataset validation |
-| `experiments/maskrcnn/train_model.py` | Multi-class training |
-| `notebooks/train_model.py` | Unified training, evaluation, and inference |
-| `notebooks/training_pipeline.ipynb` | Interactive training and analysis |
+| `experiments/maskrcnn/pipeline_utils.py` | Dataset classes, augmentation, dataloader utilities |
 | `scripts/build_wound_focus_dataset.py` | Safe image renaming and mapping pipeline |
 | `scripts/build_wound_only_dataset.py` | Wound-only COCO, infection labels, splits |
 | `scripts/apply_augmentation_only.py` | Offline augmentation |
