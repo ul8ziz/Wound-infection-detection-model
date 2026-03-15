@@ -1,6 +1,6 @@
 # Wound-Only Segmentation Training Report
 
-**Generated:** 2026-03-15 07:44:17
+**Generated:** 2026-03-15 18:06:41
 
 ## Purpose
 
@@ -22,22 +22,22 @@ Train: 257, Val: 57, Test: 55
 
 ## Best Metrics
 
-Best epoch: 13
-combined_AP50: 0.4243
-bbox_AP50: 0.5117
-segm_AP50: 0.3369
+Best epoch: 11
+combined_AP50: 0.4437
+bbox_AP50: 0.5252
+segm_AP50: 0.3623
 
-Training time: 1831.99s
+Training time: 1711.66s
 
 ## Test Metrics
 
-- bbox_AP: 0.1658
-- bbox_AP50: 0.3987
-- bbox_AP75: 0.0822
-- segm_AP: 0.0639
-- segm_AP50: 0.2399
-- segm_AP75: 0.0032
-- combined_AP50: 0.3193
+- bbox_AP: 0.1496
+- bbox_AP50: 0.3996
+- bbox_AP75: 0.0703
+- segm_AP: 0.0651
+- segm_AP50: 0.2358
+- segm_AP75: 0.0160
+- combined_AP50: 0.3177
 
 See results/predictions/ for qualitative outputs.
 

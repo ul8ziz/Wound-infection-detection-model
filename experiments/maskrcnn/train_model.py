@@ -8,12 +8,13 @@ Dataset: data/wound_focus_clean/ (train_wound_only.json, val_wound_only.json, te
 Usage:
     cd experiments/maskrcnn
     python train_model.py
+    python train_model.py --config improved   # Improved pipeline (768px, cosine LR, lighter aug)
     python train_model.py --epochs 1   # Quick test
 
 Outputs:
     - checkpoints/ (best_model.pth, last_checkpoint.pth, training_history.json)
-    - results/ (metrics, plots, predictions)
-    - reports/ (wound_only_training_report.md, review_summary_for_chatgpt.md)
+    - results/ (metrics, plots, predictions, baseline_vs_improved_comparison.json when --config improved)
+    - reports/ (baseline) or reports_wound_only/ (improved)
 """
 
 import json
@@ -82,7 +83,7 @@ if sys.platform == "win32":
 # Configuration
 # ============================================================================
 
-CONFIG = {
+CONFIG_BASELINE = {
     "data_root": str(PROJECT_ROOT / "data" / "wound_focus_clean"),
     "ann_file_train": str(PROJECT_ROOT / "data" / "wound_focus_clean" / "train_wound_only.json"),
     "ann_file_val": str(PROJECT_ROOT / "data" / "wound_focus_clean" / "val_wound_only.json"),
@@ -107,7 +108,25 @@ CONFIG = {
     "intensity": "moderate",
     "num_qualitative_samples": 8,
     "conf_thresh_qualitative": 0.5,
+    "mask_eval_threshold": 0.5,
+    "lr_schedule": "step",  # step | cosine
 }
+
+def _get_config_improved():
+    c = dict(CONFIG_BASELINE)
+    c.update({
+        "image_size": (768, 768),
+        "intensity": "light",
+        "early_stop_min_delta": 0.005,
+        "lr_schedule": "cosine",
+        "reports_dir": str(SCRIPT_DIR / "reports_wound_only"),
+    })
+    return c
+
+CONFIG_IMPROVED = _get_config_improved()
+
+# Active config (set by --config CLI)
+CONFIG = dict(CONFIG_BASELINE)
 
 MEAN = np.array([0.485, 0.456, 0.406])
 STD = np.array([0.229, 0.224, 0.225])
@@ -671,6 +690,138 @@ def save_qualitative_predictions(
     return saved_count
 
 
+def save_qualitative_predictions_val_test(
+    model: torch.nn.Module,
+    val_loader: torch.utils.data.DataLoader,
+    test_loader: torch.utils.data.DataLoader,
+    device: torch.device,
+    output_dir: Path,
+    num_val: int = 4,
+    num_test: int = 4,
+    conf_thresh: float = 0.5,
+) -> int:
+    """Save predictions to val/ and test/ subdirs for generalization comparison."""
+    pred_base = output_dir / "predictions"
+    val_dir = pred_base / "val"
+    test_dir = pred_base / "test"
+    val_dir.mkdir(parents=True, exist_ok=True)
+    test_dir.mkdir(parents=True, exist_ok=True)
+
+    def _save_to_dir(data_loader, dest_dir, n_samples):
+        model.eval()
+        dataset = data_loader.dataset
+        if isinstance(dataset, torch.utils.data.Subset):
+            dataset = dataset.dataset
+        cnt = 0
+        with torch.no_grad():
+            for images, targets in data_loader:
+                if cnt >= n_samples:
+                    break
+                outputs = model(list(img.to(device) for img in images))
+                for img_tensor, target, output in zip(images, targets, outputs):
+                    if cnt >= n_samples:
+                        break
+                    image_id = target["image_id"].item()
+                    img_info = dataset.images.get(image_id)
+                    if not img_info:
+                        continue
+                    file_name = img_info.get("file_name", "")
+                    stem = Path(file_name).stem if file_name else f"img_{image_id}"
+                    img_np = img_tensor.permute(1, 2, 0).cpu().numpy()
+                    img_np = np.clip(img_np * STD + MEAN, 0, 1)
+                    img_np = (img_np * 255).astype(np.uint8)
+                    img_np = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+                    scores = output["scores"].cpu().numpy()
+                    masks = output.get("masks")
+                    if masks is not None:
+                        masks = masks.cpu().numpy()
+                    keep = scores >= conf_thresh
+                    if keep.any() and masks is not None:
+                        h, w = img_np.shape[:2]
+                        combined_mask = np.zeros((h, w), dtype=np.uint8)
+                        for i in np.where(keep)[0]:
+                            m = masks[i, 0]
+                            if m.shape[0] != h or m.shape[1] != w:
+                                m = cv2.resize(m, (w, h), interpolation=cv2.INTER_NEAREST)
+                            combined_mask = np.maximum(combined_mask, (m > 0.5).astype(np.uint8))
+                        overlay = img_np.copy()
+                        overlay[combined_mask > 0] = (overlay[combined_mask > 0] * 0.5 + np.array([0, 255, 0]) * 0.5).astype(np.uint8)
+                        img_np = overlay
+                    conf_str = f"{float(scores.max()) if len(scores) > 0 else 0:.2f}"
+                    cv2.imwrite(str(dest_dir / f"pred_{stem}_conf_{conf_str}.png"), img_np)
+                    cnt += 1
+        return cnt
+
+    total = _save_to_dir(val_loader, val_dir, num_val) + _save_to_dir(test_loader, test_dir, num_test)
+    return total
+
+
+def save_boundary_quality_examples(
+    model: torch.nn.Module,
+    data_loader: torch.utils.data.DataLoader,
+    device: torch.device,
+    output_dir: Path,
+    num_good: int = 3,
+    num_poor: int = 3,
+    conf_thresh: float = 0.5,
+) -> int:
+    """Save good_boundary_* and poor_boundary_* examples based on confidence and mask quality."""
+    model.eval()
+    dataset = data_loader.dataset
+    if isinstance(dataset, torch.utils.data.Subset):
+        dataset = dataset.dataset
+    examples = []  # (score, mask_area, img_np, stem, is_good_candidate)
+
+    with torch.no_grad():
+        for images, targets in data_loader:
+            outputs = model(list(img.to(device) for img in images))
+            for img_tensor, target, output in zip(images, targets, outputs):
+                image_id = target["image_id"].item()
+                img_info = dataset.images.get(image_id)
+                if not img_info:
+                    continue
+                file_name = img_info.get("file_name", "")
+                stem = Path(file_name).stem if file_name else f"img_{image_id}"
+                scores = output["scores"].cpu().numpy()
+                masks = output.get("masks")
+                if masks is None or len(scores) == 0:
+                    continue
+                keep = scores >= conf_thresh
+                if not keep.any():
+                    continue
+                best_idx = np.argmax(scores[keep])
+                idx = np.where(keep)[0][best_idx]
+                score = float(scores[idx])
+                m = masks[idx, 0].cpu().numpy()
+                mask_area = float((m > 0.5).sum())
+                img_np = img_tensor.permute(1, 2, 0).cpu().numpy()
+                img_np = np.clip(img_np * STD + MEAN, 0, 1)
+                img_np = (img_np * 255).astype(np.uint8)
+                img_np = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+                h, w = img_np.shape[:2]
+                if m.shape[0] != h or m.shape[1] != w:
+                    m = cv2.resize(m, (w, h), interpolation=cv2.INTER_NEAREST)
+                overlay = img_np.copy()
+                overlay[(m > 0.5)] = (overlay[(m > 0.5)] * 0.5 + np.array([0, 255, 0]) * 0.5).astype(np.uint8)
+                examples.append((score, mask_area, overlay, stem))
+
+    if len(examples) < 2:
+        return 0
+    examples.sort(key=lambda x: x[0], reverse=True)
+    good = examples[:num_good]
+    poor = examples[-num_poor:] if len(examples) >= num_poor else examples[-(len(examples) // 2):]
+    bnd_dir = output_dir / "predictions"
+    bnd_dir.mkdir(parents=True, exist_ok=True)
+    saved = 0
+    for i, (score, area, img, stem) in enumerate(good):
+        cv2.imwrite(str(bnd_dir / f"good_boundary_{i+1}_{stem}_conf_{score:.2f}.png"), img)
+        saved += 1
+    for i, (score, area, img, stem) in enumerate(poor):
+        cv2.imwrite(str(bnd_dir / f"poor_boundary_{i+1}_{stem}_conf_{score:.2f}.png"), img)
+        saved += 1
+    return saved
+
+
 def calculate_wound_area(
     predictions: Dict,
     marker_class_id: Optional[int] = None,
@@ -948,6 +1099,112 @@ def generate_wound_only_report(results: Dict, output_dir: Path, test_metrics: Op
     print(f"  → Reports saved: {output_dir}")
 
 
+def generate_improved_report(
+    results: Dict,
+    output_dir: Path,
+    test_metrics: Optional[Dict],
+    baseline_metrics: Optional[Dict],
+) -> None:
+    """Generate wound_only_improved_training_report.md and review_summary_for_chatgpt_improved.md."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    config = results.get("config", CONFIG)
+    best_metric = results.get("best_metric", 0)
+    best_epoch = results.get("best_epoch", 0)
+    best_bbox = results.get("best_bbox_AP50", 0)
+    best_segm = results.get("best_segm_AP50", 0)
+    train_size = results.get("train_size", "?")
+    val_size = results.get("val_size", "?")
+    test_size = results.get("test_size", "?")
+    training_time = results.get("training_time", 0)
+
+    bl_val = baseline_metrics.get("best_validation", {}) if baseline_metrics else {}
+    bl_test = baseline_metrics.get("test", {}) if baseline_metrics else {}
+    imp_test = test_metrics or {}
+
+    gap_baseline = 0.0
+    if bl_val and bl_test:
+        v = bl_val.get("combined_AP50", 0)
+        t = bl_test.get("combined_AP50", 0)
+        gap_baseline = (v - t) / v if v > 0 else 0
+    gap_improved = 0.0
+    if best_metric > 0 and imp_test:
+        t = imp_test.get("combined_AP50", 0)
+        gap_improved = (best_metric - t) / best_metric if best_metric > 0 else 0
+
+    report_lines = [
+        "# Wound-Only Improved Training Report\n\n",
+        f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n",
+        "## Changes Made\n\n",
+        "- Train/val resize consistency: LongestMaxSize + PadIfNeeded (was Resize for val)\n",
+        "- Image size: 768x768 (was 512x512) for better boundary detail\n",
+        "- Augmentation intensity: light (was moderate) for better generalization\n",
+        "- LR schedule: CosineAnnealingLR (was StepLR)\n",
+        "- early_stop_min_delta: 0.005 (was 0.003)\n\n",
+        "## Rationale\n\n",
+        "Resize consistency reduces train/val distribution shift. Higher resolution preserves boundary pixels. ",
+        "Lighter augmentation reduces overfitting to train-only artifacts. Cosine LR avoids aggressive decay.\n\n",
+        f"## Best Validation Metrics (Improved)\n\n",
+        f"- combined_AP50: {best_metric:.4f}\n",
+        f"- bbox_AP50: {best_bbox:.4f}\n",
+        f"- segm_AP50: {best_segm:.4f}\n",
+        f"- Best epoch: {best_epoch}\n\n",
+        "## Test Metrics (Improved)\n\n",
+    ]
+    for k, v in (imp_test or {}).items():
+        if isinstance(v, (int, float)):
+            report_lines.append(f"- {k}: {v:.4f}\n")
+    report_lines.append("\n## Baseline vs Improved Comparison\n\n")
+    report_lines.append("| Metric | Baseline (val) | Baseline (test) | Improved (val) | Improved (test) |\n")
+    report_lines.append("|--------|----------------|-----------------|----------------|------------------|\n")
+    for k in ["combined_AP50", "bbox_AP50", "segm_AP50", "segm_AP75"]:
+        bv = bl_val.get(k, "-")
+        bt = bl_test.get(k, "-")
+        iv = best_metric if k == "combined_AP50" else (best_bbox if k == "bbox_AP50" else (best_segm if k == "segm_AP50" else "-"))
+        it = imp_test.get(k, "-")
+        bv_s = f"{bv:.4f}" if isinstance(bv, (int, float)) else str(bv)
+        bt_s = f"{bt:.4f}" if isinstance(bt, (int, float)) else str(bt)
+        iv_s = f"{iv:.4f}" if isinstance(iv, (int, float)) else str(iv)
+        it_s = f"{it:.4f}" if isinstance(it, (int, float)) else str(it)
+        report_lines.append(f"| {k} | {bv_s} | {bt_s} | {iv_s} | {it_s} |\n")
+    report_lines.append(f"\nVal-test gap: baseline ~{gap_baseline*100:.1f}%, improved ~{gap_improved*100:.1f}%\n\n")
+    report_lines.append("## Qualitative Outputs\n\n")
+    report_lines.append("See results/predictions/val/, results/predictions/test/, good_boundary_*, poor_boundary_*\n\n")
+    report_lines.append("## Remaining Limitations\n\n")
+    report_lines.append("Segmentation quality depends on annotation consistency. AP75 may remain low with coarse GT.\n\n")
+    report_lines.append("## Recommended Next Step\n\n")
+    report_lines.append("If metrics improved: consider 1024px or test-time refinement. If not: tune augmentation or data.\n\n")
+
+    with open(output_dir / "wound_only_improved_training_report.md", "w", encoding="utf-8") as f:
+        f.writelines(report_lines)
+
+    review_lines = [
+        "# Wound-Only Improved — Review Summary for ChatGPT\n\n",
+        "## Baseline Issues\n\n",
+        "- Validation-to-test performance drop (~25% combined_AP50)\n",
+        "- Low segm_AP75 (0.003) — poor fine boundary precision\n",
+        "- Coarse wound masks\n\n",
+        "## Changes Made\n\n",
+        "Resize consistency, 768px, light augmentation, CosineAnnealingLR.\n\n",
+        "## Best New Metrics\n\n",
+        f"Val: combined_AP50={best_metric:.4f}, bbox_AP50={best_bbox:.4f}, segm_AP50={best_segm:.4f}\n",
+        f"Test: {imp_test.get('combined_AP50', 0):.4f} combined_AP50, {imp_test.get('segm_AP75', 0):.4f} segm_AP75\n\n",
+        "## Comparison (Baseline vs Improved)\n\n",
+        f"Baseline test combined_AP50: {bl_test.get('combined_AP50', 0):.4f}\n",
+        f"Improved test combined_AP50: {imp_test.get('combined_AP50', 0):.4f}\n",
+        f"Baseline test segm_AP75: {bl_test.get('segm_AP75', 0):.4f}\n",
+        f"Improved test segm_AP75: {imp_test.get('segm_AP75', 0):.4f}\n\n",
+        "## Boundary Precision / Generalization\n\n",
+        "Review qualitative outputs to confirm. Delta in baseline_vs_improved_comparison.json.\n\n",
+        "## Unresolved Issues\n\n",
+        "Dataset size and annotation quality remain limiting factors.\n\n",
+        "## Recommendation for Next Stage\n\n",
+        "If improved run shows better test metrics: proceed with inference pipeline. Else: data augmentation or architecture tuning.\n\n",
+    ]
+    with open(output_dir / "review_summary_for_chatgpt_improved.md", "w", encoding="utf-8") as f:
+        f.writelines(review_lines)
+    print(f"  → Improved reports saved: {output_dir}")
+
+
 # ============================================================================
 # Main
 # ============================================================================
@@ -980,6 +1237,20 @@ def main() -> Optional[Dict]:
     results_dir.mkdir(parents=True, exist_ok=True)
     reports_dir.mkdir(parents=True, exist_ok=True)
 
+    # For improved config: preserve baseline metrics for comparison
+    baseline_metrics: Optional[Dict] = None
+    if str(reports_dir).endswith("reports_wound_only"):
+        baseline_path = results_dir / "metrics_summary.json"
+        if baseline_path.exists():
+            try:
+                with open(baseline_path, "r", encoding="utf-8") as f:
+                    baseline_metrics = json.load(f)
+                with open(results_dir / "baseline_metrics.json", "w", encoding="utf-8") as f:
+                    json.dump(baseline_metrics, f, indent=2, default=str)
+                print(f"  → Preserved baseline metrics to baseline_metrics.json")
+            except Exception as e:
+                print(f"  [WARNING] Could not preserve baseline: {e}")
+
     print("Loading datasets...")
     train_dataset = create_dataset(
         root=str(data_root),
@@ -996,7 +1267,7 @@ def main() -> Optional[Dict]:
         annotation_file=str(val_ann),
         train=False,
         image_size=CONFIG["image_size"],
-        use_medical_augmentation=False,
+        use_medical_augmentation=CONFIG["use_medical_augmentation"],
         preserve_marker=CONFIG["preserve_marker"],
         intensity=CONFIG["intensity"],
         target_classes=WOUND_ONLY_CLASSES,
@@ -1006,7 +1277,7 @@ def main() -> Optional[Dict]:
         annotation_file=str(test_ann),
         train=False,
         image_size=CONFIG["image_size"],
-        use_medical_augmentation=False,
+        use_medical_augmentation=CONFIG["use_medical_augmentation"],
         preserve_marker=CONFIG["preserve_marker"],
         intensity=CONFIG["intensity"],
         target_classes=WOUND_ONLY_CLASSES,
@@ -1047,7 +1318,13 @@ def main() -> Optional[Dict]:
         momentum=0.9,
         weight_decay=0.0005,
     )
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
+    lr_schedule = CONFIG.get("lr_schedule", "step")
+    if lr_schedule == "cosine":
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=CONFIG["epochs"], eta_min=1e-6
+        )
+    else:
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
     class_mapping = getattr(base_ds, "class_mapping", {})
 
     results = {
@@ -1174,8 +1451,40 @@ def main() -> Optional[Dict]:
         print(f"[WARNING] Test evaluation failed: {e}")
         results["test_metrics"] = {}
 
+    metrics_summary = {
+        "best_validation": {
+            "combined_AP50": results["best_metric"],
+            "bbox_AP50": results["best_bbox_AP50"],
+            "segm_AP50": results["best_segm_AP50"],
+            "best_epoch": results["best_epoch"],
+        },
+        "test": results.get("test_metrics", {}),
+        "config": CONFIG,
+    }
     with open(results_dir / "metrics_summary.json", "w", encoding="utf-8") as f:
-        json.dump({"best_validation": {"combined_AP50": results["best_metric"], "bbox_AP50": results["best_bbox_AP50"], "segm_AP50": results["best_segm_AP50"], "best_epoch": results["best_epoch"]}, "test": results.get("test_metrics", {}), "config": CONFIG}, f, indent=2, default=str)
+        json.dump(metrics_summary, f, indent=2, default=str)
+
+    # For improved config: save improved metrics and comparison
+    if baseline_metrics is not None:
+        with open(results_dir / "improved_metrics_summary.json", "w", encoding="utf-8") as f:
+            json.dump(metrics_summary, f, indent=2, default=str)
+        bl_val = baseline_metrics.get("best_validation", {})
+        bl_test = baseline_metrics.get("test", {})
+        imp_val = metrics_summary["best_validation"]
+        imp_test = metrics_summary.get("test", {})
+        delta = {}
+        for k in ["bbox_AP50", "segm_AP50", "combined_AP50", "segm_AP75", "bbox_AP75"]:
+            if k in imp_test and k in bl_test:
+                delta[f"test_{k}"] = round(imp_test[k] - bl_test[k], 4)
+        comparison = {
+            "baseline": {"val": bl_val, "test": bl_test},
+            "improved": {"val": imp_val, "test": imp_test},
+            "delta": delta,
+        }
+        with open(results_dir / "baseline_vs_improved_comparison.json", "w", encoding="utf-8") as f:
+            json.dump(comparison, f, indent=2, default=str)
+        print(f"  → Saved improved_metrics_summary.json and baseline_vs_improved_comparison.json")
+
     with open(output_dir / "training_history.json", "w", encoding="utf-8") as f:
         json.dump({"train_losses": results["train_losses"], "val_losses": results["val_losses"], "metrics_per_epoch": results["metrics_per_epoch"], "config": CONFIG}, f, indent=2, default=str)
 
@@ -1184,11 +1493,30 @@ def main() -> Optional[Dict]:
     save_ap_curves(results["metrics_per_epoch"], results_dir)
 
     print("\nSaving qualitative predictions...")
-    n_saved = save_qualitative_predictions(model, test_loader, device, results_dir, num_samples=CONFIG.get("num_qualitative_samples", 8), conf_thresh=CONFIG.get("conf_thresh_qualitative", 0.5))
-    print(f"  → Saved {n_saved} images to {results_dir / 'predictions'}")
+    conf_thresh = CONFIG.get("conf_thresh_qualitative", 0.5)
+    if str(reports_dir).endswith("reports_wound_only"):
+        n_val_test = save_qualitative_predictions_val_test(
+            model, val_loader, test_loader, device, results_dir,
+            num_val=4, num_test=4, conf_thresh=conf_thresh,
+        )
+        n_boundary = save_boundary_quality_examples(
+            model, test_loader, device, results_dir,
+            num_good=3, num_poor=3, conf_thresh=conf_thresh,
+        )
+        print(f"  → Saved {n_val_test} to predictions/val/ and predictions/test/, {n_boundary} boundary examples")
+    else:
+        n_saved = save_qualitative_predictions(
+            model, test_loader, device, results_dir,
+            num_samples=CONFIG.get("num_qualitative_samples", 8),
+            conf_thresh=conf_thresh,
+        )
+        print(f"  → Saved {n_saved} images to {results_dir / 'predictions'}")
 
     print("\nGenerating reports...")
-    generate_wound_only_report(results, reports_dir, test_metrics)
+    if baseline_metrics is not None:
+        generate_improved_report(results, reports_dir, test_metrics, baseline_metrics)
+    else:
+        generate_wound_only_report(results, reports_dir, test_metrics)
 
     print("\n" + "=" * 80)
     print("Training Summary")
@@ -1207,7 +1535,13 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Wound-Only Segmentation Training")
     parser.add_argument("--epochs", type=int, default=None, help="Override epochs (quick test)")
+    parser.add_argument("--config", type=str, default="baseline", choices=["baseline", "improved"],
+                        help="Config preset: baseline or improved")
     args = parser.parse_args()
+    if args.config == "improved":
+        CONFIG.clear()
+        CONFIG.update(CONFIG_IMPROVED)
+        print(f"[Config] Using IMPROVED preset (768px, light aug, cosine LR)")
     if args.epochs is not None:
         CONFIG["epochs"] = args.epochs
         print(f"[Override] epochs={args.epochs}")

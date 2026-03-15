@@ -74,9 +74,20 @@ def get_medical_augmentation_pipeline(
     """
     
     if not train:
-        # Validation: minimal transforms (resize + normalize only)
+        # Validation: same resize strategy as train (LongestMaxSize + PadIfNeeded)
+        # for train/val consistency and better generalization
         return A.Compose([
-            A.Resize(height=image_size[0], width=image_size[1], interpolation=cv2.INTER_LINEAR),
+            A.LongestMaxSize(
+                max_size=max(image_size),
+                interpolation=cv2.INTER_LINEAR,
+                p=1.0
+            ),
+            A.PadIfNeeded(
+                min_height=image_size[0],
+                min_width=image_size[1],
+                border_mode=cv2.BORDER_CONSTANT,
+                p=1.0
+            ),
             A.Normalize(
                 mean=[0.485, 0.456, 0.406],
                 std=[0.229, 0.224, 0.225]
