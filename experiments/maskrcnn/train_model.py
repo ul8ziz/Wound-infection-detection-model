@@ -62,7 +62,6 @@ from pipeline_utils import (
     make_dataloaders,
     WOUND_ONLY_CLASSES,
 )
-import validate_wound_only_dataset
 
 # Fix encoding for Windows (only if not in Jupyter/IPython)
 if sys.platform == "win32":
@@ -110,6 +109,8 @@ CONFIG_BASELINE = {
     "conf_thresh_qualitative": 0.5,
     "mask_eval_threshold": 0.5,
     "lr_schedule": "step",  # step | cosine
+    # Pixel-to-cm conversion when no marker: 1 cm ≈ N pixels (typical 512×512 wound image, ~20cm FOV)
+    "pixels_per_cm": 26.0,
 }
 
 def _get_config_improved():
@@ -120,6 +121,7 @@ def _get_config_improved():
         "early_stop_min_delta": 0.005,
         "lr_schedule": "cosine",
         "reports_dir": str(SCRIPT_DIR / "reports_wound_only"),
+        "pixels_per_cm": 38.4,  # 768×768: ~20cm FOV
     })
     return c
 
@@ -175,6 +177,180 @@ def validate_dataset_labels(
                 f"Model num_classes={num_classes}."
             )
     return unique
+
+
+# ============================================================================
+# Wound-Only Dataset Validation (pre-training)
+# ============================================================================
+
+# Expected counts from dataset_build_report.md
+_EXPECTED_TRAIN = 257
+_EXPECTED_VAL = 57
+_EXPECTED_TEST = 55
+_EXPECTED_CATEGORIES = [{"id": 1, "name": "wound"}]
+
+
+def _validate_categories(coco: dict, split_name: str) -> bool:
+    """Verify categories are exactly one wound class."""
+    cats = coco.get("categories", [])
+    if len(cats) != 1:
+        print(f"  [FAIL] {split_name}: expected 1 category, got {len(cats)}")
+        return False
+    if cats[0] != _EXPECTED_CATEGORIES[0]:
+        print(f"  [FAIL] {split_name}: expected {_EXPECTED_CATEGORIES[0]}, got {cats[0]}")
+        return False
+    print(f"  [OK] {split_name}: categories = {cats}")
+    return True
+
+
+def _validate_image_paths(coco: dict, root: Path, split_name: str) -> bool:
+    """Verify all image paths resolve and files exist."""
+    def _norm(p: str) -> str:
+        return str(p).replace("\\", "/")
+    images = coco.get("images", [])
+    missing = []
+    for img in images:
+        fn = _norm(img.get("file_name", ""))
+        if not fn:
+            missing.append((img.get("id"), "empty file_name"))
+            continue
+        full_path = root / fn
+        if not full_path.exists():
+            missing.append((img.get("id"), str(full_path)))
+    if missing:
+        for img_id, path in missing[:5]:
+            print(f"  [FAIL] {split_name}: image {img_id} not found: {path}")
+        if len(missing) > 5:
+            print(f"  [FAIL] {split_name}: ... and {len(missing) - 5} more")
+        return False
+    print(f"  [OK] {split_name}: all {len(images)} images found")
+    return True
+
+
+def _validate_annotations(coco: dict, split_name: str) -> bool:
+    """Verify annotations have non-empty segmentation and valid bbox."""
+    anns = coco.get("annotations", [])
+    invalid = []
+    for ann in anns:
+        seg = ann.get("segmentation", [])
+        if not seg:
+            invalid.append((ann.get("id"), "empty segmentation"))
+            continue
+        bbox = ann.get("bbox", [])
+        if len(bbox) < 4 or bbox[2] <= 0 or bbox[3] <= 0:
+            invalid.append((ann.get("id"), "invalid bbox"))
+    if invalid:
+        for ann_id, reason in invalid[:5]:
+            print(f"  [FAIL] {split_name}: annotation {ann_id}: {reason}")
+        if len(invalid) > 5:
+            print(f"  [FAIL] {split_name}: ... and {len(invalid) - 5} more")
+        return False
+    print(f"  [OK] {split_name}: all {len(anns)} annotations valid")
+    return True
+
+
+def _validate_counts(coco: dict, split_name: str, expected: int) -> bool:
+    """Verify image count matches build report."""
+    n = len(coco.get("images", []))
+    if n != expected:
+        print(f"  [FAIL] {split_name}: expected {expected} images, got {n}")
+        return False
+    print(f"  [OK] {split_name}: {n} images (matches expected)")
+    return True
+
+
+def _validate_dataset_sample(root: Path, ann_file: Path, image_size: Tuple[int, int]) -> bool:
+    """Sample a few images via WoundDataset and verify masks."""
+    try:
+        dataset = create_dataset(
+            root=str(root),
+            annotation_file=str(ann_file),
+            train=False,
+            image_size=image_size,
+            use_medical_augmentation=False,
+            target_classes=WOUND_ONLY_CLASSES,
+        )
+        n_samples = min(5, len(dataset))
+        for i in range(n_samples):
+            _, target = dataset[i]
+            masks = target.get("masks")
+            if masks is None or masks.numel() == 0:
+                print(f"  [FAIL] Sample {i}: no masks in target")
+                return False
+            if masks.sum().item() <= 0:
+                print(f"  [FAIL] Sample {i}: mask is empty")
+                return False
+        print(f"  [OK] Sampled {n_samples} images; masks non-empty")
+        return True
+    except Exception as e:
+        print(f"  [FAIL] Dataset sample error: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def validate_wound_dataset(
+    data_root: Optional[Path] = None,
+    ann_train: Optional[Path] = None,
+    ann_val: Optional[Path] = None,
+    ann_test: Optional[Path] = None,
+    image_size: Tuple[int, int] = (512, 512),
+) -> int:
+    """
+    Pre-training validation for wound-only dataset. Verifies COCO files, categories,
+    image paths, annotations, counts, and a WoundDataset sample.
+    Returns 0 on success, 1 on any failure.
+    """
+    data_root = data_root or Path(CONFIG["data_root"])
+    ann_train = ann_train or Path(CONFIG["ann_file_train"])
+    ann_val = ann_val or Path(CONFIG["ann_file_val"])
+    ann_test = ann_test or Path(CONFIG["ann_file_test"])
+
+    print("=" * 60)
+    print("Wound-Only Dataset Validation")
+    print("=" * 60)
+    print(f"Data root: {data_root}")
+    print()
+
+    if not data_root.exists():
+        print(f"[FAIL] Data root does not exist: {data_root}")
+        return 1
+
+    all_ok = True
+    for split_name, ann_path, expected in [
+        ("train", ann_train, _EXPECTED_TRAIN),
+        ("val", ann_val, _EXPECTED_VAL),
+        ("test", ann_test, _EXPECTED_TEST),
+    ]:
+        print(f"--- {split_name} ---")
+        if not ann_path.exists():
+            print(f"  [FAIL] Annotation file not found: {ann_path}")
+            all_ok = False
+            continue
+        with open(ann_path, "r", encoding="utf-8") as f:
+            coco = json.load(f)
+        if not _validate_categories(coco, split_name):
+            all_ok = False
+        if not _validate_image_paths(coco, data_root, split_name):
+            all_ok = False
+        if not _validate_annotations(coco, split_name):
+            all_ok = False
+        if not _validate_counts(coco, split_name, expected):
+            all_ok = False
+        print()
+
+    print("--- Dataset sample (WoundDataset) ---")
+    if not _validate_dataset_sample(data_root, ann_train, image_size):
+        all_ok = False
+    print()
+
+    print("=" * 60)
+    if all_ok:
+        print("PASS: All validation checks passed.")
+        return 0
+    else:
+        print("FAIL: One or more validation checks failed.")
+        return 1
 
 
 # ============================================================================
@@ -826,8 +1002,13 @@ def calculate_wound_area(
     predictions: Dict,
     marker_class_id: Optional[int] = None,
     marker_size_cm: float = 3.0,
+    pixels_per_cm: Optional[float] = None,
 ) -> Tuple[Optional[float], Optional[float]]:
-    """Compute wound area. With marker: (area_cm2, pixel_to_cm). Without: (area_px, None)."""
+    """
+    Compute wound area in cm².
+    With marker: use marker area for calibration. Without: use pixels_per_cm if provided.
+    Returns (area_cm2, pixel_to_cm). pixel_to_cm is None when using pixels_per_cm fallback.
+    """
     labels = predictions["labels"].cpu().numpy()
     masks = predictions["masks"].cpu().numpy()
     wound_idx = np.where(labels == 1)[0]
@@ -845,6 +1026,10 @@ def calculate_wound_area(
             if marker_area_pixels > 0:
                 pixel_to_cm = marker_size_cm / np.sqrt(marker_area_pixels)
                 return wound_area_pixels * (pixel_to_cm ** 2), pixel_to_cm
+    if pixels_per_cm is not None and pixels_per_cm > 0:
+        area_cm2 = wound_area_pixels / (pixels_per_cm ** 2)
+        return area_cm2, None
+    # No marker and no pixels_per_cm: return pixels (caller may treat as px)
     return wound_area_pixels, None
 
 
@@ -883,10 +1068,13 @@ def predict_image(
         "masks": output["masks"][keep],
     }
 
-    wound_area_cm2, pixel_to_cm = calculate_wound_area(filtered, marker_class_id=marker_class_id)
+    pixels_per_cm = CONFIG.get("pixels_per_cm")
+    wound_area_cm2, pixel_to_cm = calculate_wound_area(
+        filtered, marker_class_id=marker_class_id, pixels_per_cm=pixels_per_cm
+    )
     wound_area_px = None
-    if wound_area_cm2 is not None and pixel_to_cm is None:
-        wound_area_px = wound_area_cm2
+    if wound_area_cm2 is not None and pixel_to_cm is None and pixels_per_cm is None:
+        wound_area_px = int(wound_area_cm2)
         wound_area_cm2 = None
     stem = img_path.stem
     has_infection = "not_infected" not in stem.lower()
@@ -978,6 +1166,7 @@ def predict_single_image(
     h, w = img_np.shape[:2]
 
     wound_area_px = 0
+    wound_area_cm2 = None
     best_box = None
     best_score = 0.0
     keep = scores >= conf_thresh
@@ -992,6 +1181,9 @@ def predict_single_image(
             m = cv2.resize(m, (w, h), interpolation=cv2.INTER_NEAREST)
         binary = (m > 0.5).astype(np.uint8)
         wound_area_px = int(np.sum(binary))
+        pixels_per_cm = CONFIG.get("pixels_per_cm")
+        if pixels_per_cm and pixels_per_cm > 0:
+            wound_area_cm2 = wound_area_px / (pixels_per_cm ** 2)
         overlay = img_np.copy()
         overlay[binary > 0] = (overlay[binary > 0] * 0.5 + np.array([0, 255, 0]) * 0.5).astype(np.uint8)
         img_np = overlay
@@ -1000,12 +1192,21 @@ def predict_single_image(
 
     font = cv2.FONT_HERSHEY_SIMPLEX
     y_offset = 30
-    cv2.putText(img_np, f"Wound area: {wound_area_px} px", (10, y_offset), font, 0.7, (0, 0, 0), 2)
+    area_text = f"{wound_area_cm2:.2f} cm²" if wound_area_cm2 is not None else f"{wound_area_px} px"
+    cv2.putText(img_np, f"Wound area: {area_text}", (10, y_offset), font, 0.7, (0, 0, 0), 2)
     cv2.putText(img_np, f"Infection: {infection_label}", (10, y_offset + 35), font, 0.7, (0, 255, 0) if has_infection else (0, 165, 255), 2)
     if best_score > 0:
         cv2.putText(img_np, f"Conf: {best_score:.2f}", (10, y_offset + 70), font, 0.7, (0, 0, 0), 2)
 
-    info = {"file_name": file_name, "wound_area_px": wound_area_px, "infection": infection_label, "has_infection": has_infection, "confidence": best_score, "sample_index": sample_index}
+    info = {
+        "file_name": file_name,
+        "wound_area_px": wound_area_px,
+        "wound_area_cm2": round(wound_area_cm2, 2) if wound_area_cm2 is not None else None,
+        "infection": infection_label,
+        "has_infection": has_infection,
+        "confidence": best_score,
+        "sample_index": sample_index,
+    }
     return img_np, info
 
 
@@ -1052,6 +1253,54 @@ def save_ap_curves(metrics_per_epoch: List[Dict], output_dir: Path) -> None:
     fig.tight_layout()
     fig.savefig(output_dir / "ap_curves.png", dpi=150)
     plt.close(fig)
+
+
+def display_results_curves(results_dir: Path, max_show: int = 2) -> None:
+    """Display saved curve images (training_curves.png, ap_curves.png) in Jupyter."""
+    try:
+        from IPython.display import display, Image as IPImage
+    except ImportError:
+        return
+    curve_files = [
+        Path(results_dir) / "training_curves.png",
+        Path(results_dir) / "ap_curves.png",
+    ]
+    for fp in curve_files[:max_show]:
+        if fp.exists():
+            display(IPImage(filename=str(fp)))
+
+
+def display_results_predictions(results_dir: Path, n_show: int = 8) -> None:
+    """Display qualitative prediction images in a grid (Jupyter)."""
+    try:
+        from IPython.display import display
+    except ImportError:
+        return
+    pred_dir = Path(results_dir) / "predictions"
+    if not pred_dir.exists():
+        return
+    pred_files = sorted(pred_dir.glob("*.png"))
+    n_show = min(n_show, len(pred_files))
+    if n_show == 0:
+        return
+    cols = min(4, n_show)
+    rows = (n_show + cols - 1) // cols
+    fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 5 * rows))
+    if rows == 1 and cols == 1:
+        axes = np.array([axes])
+    axes = np.array(axes).flatten()
+    for i, fp in enumerate(pred_files[:n_show]):
+        img = cv2.imread(str(fp))
+        if img is not None:
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            axes[i].imshow(img)
+        axes[i].set_title(fp.stem.replace("pred_", "").replace("_", " "), fontsize=8)
+        axes[i].axis("off")
+    for i in range(n_show, len(axes)):
+        axes[i].axis("off")
+    fig.suptitle(f"Qualitative Predictions ({n_show} samples)", fontsize=14)
+    fig.tight_layout()
+    plt.show()
 
 
 def generate_wound_only_report(results: Dict, output_dir: Path, test_metrics: Optional[Dict] = None) -> None:
@@ -1216,7 +1465,7 @@ def main() -> Optional[Dict]:
     print("=" * 80)
     print(f"Start: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
-    if validate_wound_only_dataset.main() != 0:
+    if validate_wound_dataset() != 0:
         print("[ERROR] Dataset validation failed.")
         return None
 
@@ -1537,6 +1786,8 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=None, help="Override epochs (quick test)")
     parser.add_argument("--config", type=str, default="baseline", choices=["baseline", "improved"],
                         help="Config preset: baseline or improved")
+    parser.add_argument("--validate-only", action="store_true",
+                        help="Run dataset validation only, then exit")
     args = parser.parse_args()
     if args.config == "improved":
         CONFIG.clear()
@@ -1545,6 +1796,8 @@ if __name__ == "__main__":
     if args.epochs is not None:
         CONFIG["epochs"] = args.epochs
         print(f"[Override] epochs={args.epochs}")
+    if args.validate_only:
+        sys.exit(validate_wound_dataset())
     try:
         results = main()
         sys.exit(0 if results else 1)

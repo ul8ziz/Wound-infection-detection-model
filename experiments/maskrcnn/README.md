@@ -2,7 +2,7 @@
 
 This folder contains the **code and outputs** for the Mask R-CNN wound detection experiment.
 
-- **Code:** `training_pipeline.ipynb` (main), `train_model.py` (CLI + all helpers), `validate_wound_only_dataset.py`, `pipeline_utils.py`
+- **Code:** `training_pipeline.ipynb` (main), `train_model.py` (CLI + all helpers + dataset validation), `pipeline_utils.py`
 - **Outputs:** `checkpoints/`, `results/`, `reports/`
 - **Data:** Shared at `../../data` (not copied here)
 
@@ -27,8 +27,8 @@ It is **not currently reliable** for robust fine-grained multi-class segmentatio
 After building the wound-only dataset (`scripts/build_wound_only_dataset.py`):
 
 ```bash
-python validate_wound_only_dataset.py   # Pre-training validation
-python train_model.py              # Full training
+python train_model.py --validate-only   # Pre-training validation only
+python train_model.py              # Full training (runs validation first)
 python train_model.py --epochs 1   # Quick sanity check
 ```
 

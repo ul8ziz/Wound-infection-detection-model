@@ -88,8 +88,7 @@ Wound-infection-detection-model/
 ├── experiments/
 │   └── maskrcnn/                  # Mask R-CNN experiments
 │       ├── training_pipeline.ipynb # Main wound-only training notebook (recommended)
-│       ├── train_model.py         # Wound-only training (CLI + all helpers)
-│       ├── validate_wound_only_dataset.py
+│       ├── train_model.py         # Wound-only training (CLI + validation + helpers)
 │       ├── pipeline_utils.py
 │       ├── checkpoints/
 │       ├── results/
@@ -190,6 +189,7 @@ CONFIG = {
     "epochs": 50,
     "lr": 0.001,
     "image_size": (512, 512),
+    "pixels_per_cm": 26.0,  # For wound area in cm² (calibration; ~20cm FOV)
     "use_medical_augmentation": True,
     "preserve_marker": True,
 }
@@ -200,10 +200,10 @@ CONFIG = {
 **Outputs:**
 - `checkpoints/` — best model, last checkpoint, training history
 - `results/` — metrics, plots, qualitative predictions, `baseline_vs_improved_comparison.json` (when using improved)
-- `reports/` — baseline: `wound_only_training_report.md`, `review_summary_for_chatgpt.md`
+- `reports/` — baseline: `wound_only_training_report.md`, `review_summary_for_chatgpt.md` (include interpretation and baseline comparison)
 - `reports_wound_only/` — improved: `wound_only_improved_training_report.md`, `review_summary_for_chatgpt_improved.md`
 
-**Validation:** Run `python validate_wound_only_dataset.py` before training to verify dataset integrity.
+**Validation:** Run `python train_model.py --validate-only` before training, or let training run it automatically.
 
 **Quick test:** `python train_model.py --epochs 1` for a single-epoch sanity check.
 
@@ -274,7 +274,7 @@ python apply_augmentation_only.py
 |--------|---------|
 | `experiments/maskrcnn/training_pipeline.ipynb` | **Main wound-only training notebook** |
 | `experiments/maskrcnn/train_model.py` | Wound-only training (CLI); build_model, train/val, predict_image, visualize_prediction, reports |
-| `experiments/maskrcnn/validate_wound_only_dataset.py` | Pre-training dataset validation |
+| `experiments/maskrcnn/train_model.py --validate-only` | Pre-training dataset validation |
 | `experiments/maskrcnn/pipeline_utils.py` | Dataset classes, augmentation, dataloader utilities |
 | `scripts/build_wound_focus_dataset.py` | Safe image renaming and mapping pipeline |
 | `scripts/build_wound_only_dataset.py` | Wound-only COCO, infection labels, splits |
