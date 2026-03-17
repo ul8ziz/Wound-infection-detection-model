@@ -1,18 +1,18 @@
 {
   "best_validation": {
-    "combined_AP50": 0.43191685300521776,
-    "bbox_AP50": 0.5152812901302184,
-    "segm_AP50": 0.3485524158802172,
-    "best_epoch": 10
+    "combined_AP50": 0.4170536143690081,
+    "bbox_AP50": 0.5171281671262736,
+    "segm_AP50": 0.3169790616117426,
+    "best_epoch": 13
   },
   "test": {
-    "bbox_AP": 0.15150929046282813,
-    "bbox_AP50": 0.41197373100770507,
-    "bbox_AP75": 0.06053290689816475,
-    "segm_AP": 0.06362270086061779,
-    "segm_AP50": 0.25678747942087754,
-    "segm_AP75": 0.004051023109212522,
-    "combined_AP50": 0.3343806052142913
+    "bbox_AP": 0.15207132076840263,
+    "bbox_AP50": 0.39808398259746247,
+    "bbox_AP75": 0.06251356234753284,
+    "segm_AP": 0.057496637213130586,
+    "segm_AP50": 0.21702115442742942,
+    "segm_AP75": 0.007600730055297242,
+    "combined_AP50": 0.30755256851244595
   },
   "config": {
     "data_root": "E:\\GitHub\\Wound-infection-detection-model\\data\\wound_focus_clean",
@@ -41,6 +41,7 @@
     "preserve_marker": true,
     "intensity": "moderate",
     "num_qualitative_samples": 8,
-    "conf_thresh_qualitative": 0.5
+    "conf_thresh_qualitative": 0.5,
+    "pixels_per_cm": 26.0
   }
 }
