@@ -1,0 +1,62 @@
+# =============================================================================
+# YOLO11m + U-Net++ Wound Detection & Segmentation — Configuration
+# =============================================================================
+
+# === General ===
+seed: 42
+data_root: "../../data/wound_focus_clean"
+ann_train: "../../data/wound_focus_clean/train_wound_only.json"
+ann_val: "../../data/wound_focus_clean/val_wound_only.json"
+ann_test: "../../data/wound_focus_clean/test_wound_only.json"
+num_workers: 0   # Windows-safe default; increase on Linux
+
+# === YOLO11m-seg (Stage 1: Detection + Coarse Segmentation) ===
+yolo:
+  model: "yolo11m-seg.pt"
+  image_size: 640
+  batch_size: 8
+  epochs: 100
+  lr0: 0.01
+  lrf: 0.01
+  optimizer: "SGD"
+  momentum: 0.937
+  weight_decay: 0.0005
+  patience: 20
+  # Augmentation (marker-safe: no perspective distortion)
+  degrees: 10
+  perspective: 0.0
+  flipud: 0.5
+  fliplr: 0.5
+  mosaic: 1.0
+  mixup: 0.1
+  hsv_h: 0.015
+  hsv_s: 0.7
+  hsv_v: 0.4
+
+# === U-Net++ (Stage 2: Refined Segmentation on ROI crops) ===
+unet:
+  encoder: "efficientnet-b3"
+  encoder_weights: "imagenet"
+  input_size: [256, 256]
+  in_channels: 3
+  classes: 1
+  batch_size: 16
+  epochs: 50
+  lr: 0.0001
+  weight_decay: 0.0001
+  optimizer: "AdamW"
+  scheduler: "CosineAnnealingLR"
+  scheduler_T_max: 50
+  scheduler_eta_min: 0.000001
+  early_stop_patience: 10
+  loss_bce_weight: 0.5
+  loss_dice_weight: 0.5
+  roi_padding: 0.1
+
+# === Combined Inference ===
+combined:
+  yolo_conf_thresh: 0.5
+  unet_mask_thresh: 0.5
+  roi_padding: 0.1
+  pixels_per_cm: 26.0
+  num_qualitative_samples: 8
