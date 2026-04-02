@@ -147,6 +147,16 @@ def _create_image_list(coco_json_path: Union[str, Path], images_root: Union[str,
     return paths
 
 
+def image_path_to_yolo_label_path(image_path: Union[str, Path]) -> Path:
+    """
+    Match Ultralytics ``img2label_paths`` (see ultralytics.data.utils):
+    replace the ``.../images/...`` segment with ``.../labels/...`` and use ``.txt``.
+    """
+    x = str(Path(image_path).resolve())
+    sa, sb = f"{os.sep}images{os.sep}", f"{os.sep}labels{os.sep}"
+    return Path(sb.join(x.rsplit(sa, 1)).rsplit(".", 1)[0] + ".txt")
+
+
 def create_dataset_yaml(
     output_path: Union[str, Path],
     images_root: Union[str, Path],
@@ -166,7 +176,6 @@ def create_dataset_yaml(
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     images_root = Path(images_root).resolve()
-    labels_root = Path(labels_root).resolve()
 
     list_dir = output_path.parent
     for split, json_path in [("train", train_json), ("val", val_json), ("test", test_json)]:
@@ -197,20 +206,27 @@ def prepare_yolo_dataset(
     """
     End-to-end: convert COCO annotations to YOLO format and generate
     dataset.yaml.  Returns path to the generated dataset.yaml.
+
+    Label ``.txt`` files are written under ``<data_root>/labels/``, with the same
+    stem as each image under ``<data_root>/images/``.  This matches Ultralytics,
+    which resolves labels by replacing the ``images`` path segment with
+    ``labels`` (see ``ultralytics.data.utils.img2label_paths``).  Writing labels
+    under ``yolo_data/labels/train`` breaks training (no labels found, zero mAP).
     """
     project_root = script_dir.parent.parent
     data_root = (project_root / config["data_root"]).resolve()
     images_root = data_root
+    # Must mirror .../images/name.jpg -> .../labels/name.txt for Ultralytics
+    labels_dir = data_root / "labels"
+    labels_dir.mkdir(parents=True, exist_ok=True)
 
     yolo_data_dir = script_dir / "yolo_data"
-    labels_dir = yolo_data_dir / "labels"
 
     for split, ann_key in [("train", "ann_train"), ("val", "ann_val"), ("test", "ann_test")]:
         ann_path = (project_root / config[ann_key]).resolve()
-        split_labels = labels_dir / split
         print(f"  Converting {split} ({ann_path.name}) ...")
-        n = coco_to_yolo_seg(ann_path, split_labels, images_root, class_names=WOUND_ONLY_CLASSES)
-        print(f"    -> {n} label files")
+        n = coco_to_yolo_seg(ann_path, labels_dir, images_root, class_names=WOUND_ONLY_CLASSES)
+        print(f"    -> {n} label files written to {labels_dir}")
 
     dataset_yaml = yolo_data_dir / "dataset.yaml"
     create_dataset_yaml(
@@ -251,6 +267,23 @@ def validate_yolo_dataset(dataset_yaml: Union[str, Path]) -> bool:
             ok = False
         else:
             print(f"[OK] {split}: {len(paths)} images listed, spot-check passed")
+
+        # Ultralytics maps each image path to a label path (images -> labels)
+        missing_lbl = []
+        nonempty = 0
+        for p in paths[:50]:
+            lp = image_path_to_yolo_label_path(p)
+            if not lp.exists():
+                missing_lbl.append(str(lp))
+            elif lp.stat().st_size > 0:
+                nonempty += 1
+        if missing_lbl:
+            print(f"[FAIL] {split}: {len(missing_lbl)} of first 50 YOLO label files missing (expected next to images)")
+            for m in missing_lbl[:3]:
+                print(f"       e.g. {m}")
+            ok = False
+        else:
+            print(f"[OK] {split}: YOLO label paths (images->labels) exist; {nonempty}/50 sample .txt non-empty")
 
     names = ds.get("names", {})
     print(f"[OK] Classes: {names}")
@@ -351,7 +384,13 @@ class WoundROIDataset(Dataset):
             crop_img = torch.from_numpy(crop_img).permute(2, 0, 1).float() / 255.0
 
         if not isinstance(crop_mask, torch.Tensor):
-            crop_mask = torch.from_numpy(crop_mask).float()
+            crop_mask = torch.from_numpy(crop_mask)
+
+        # BCEWithLogitsLoss requires float32 targets in [0, 1]; ToTensorV2 often leaves masks as uint8
+        crop_mask = torch.as_tensor(crop_mask, dtype=torch.float32)
+        if crop_mask.numel() > 0 and crop_mask.max() > 1.0:
+            crop_mask = crop_mask / 255.0
+        crop_mask = crop_mask.clamp(0.0, 1.0).contiguous()
 
         if crop_mask.ndim == 2:
             crop_mask = crop_mask.unsqueeze(0)
@@ -415,6 +454,15 @@ def create_unet_datasets(
     return train_ds, val_ds, test_ds
 
 
+def unet_collate_fn(
+    batch: List[Tuple[torch.Tensor, torch.Tensor]],
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Stack batches; force mask batch to float32 so default_collate never keeps uint8."""
+    imgs = torch.stack([b[0] for b in batch], dim=0)
+    masks = torch.stack([torch.as_tensor(b[1], dtype=torch.float32) for b in batch], dim=0)
+    return imgs, masks
+
+
 def make_unet_dataloaders(
     train_ds: Dataset,
     val_ds: Dataset,
@@ -423,12 +471,20 @@ def make_unet_dataloaders(
 ) -> Tuple[DataLoader, DataLoader]:
     """Create train and val DataLoaders for U-Net++."""
     train_loader = DataLoader(
-        train_ds, batch_size=batch_size, shuffle=True,
-        num_workers=num_workers, pin_memory=torch.cuda.is_available(),
+        train_ds,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),
+        collate_fn=unet_collate_fn,
     )
     val_loader = DataLoader(
-        val_ds, batch_size=batch_size, shuffle=False,
-        num_workers=num_workers, pin_memory=torch.cuda.is_available(),
+        val_ds,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),
+        collate_fn=unet_collate_fn,
     )
     return train_loader, val_loader
 

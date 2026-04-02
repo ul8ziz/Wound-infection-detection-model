@@ -52,6 +52,7 @@ from pipeline_utils import (
     validate_yolo_dataset,
     create_unet_datasets,
     make_unet_dataloaders,
+    unet_collate_fn,
     WoundDataset,
     WoundROIDataset,
     get_unet_transforms,
@@ -281,6 +282,14 @@ def build_unet_model(config: dict) -> nn.Module:
     return model
 
 
+def _mask_to_float01(t: torch.Tensor, *, like: torch.Tensor) -> torch.Tensor:
+    """Binary mask for BCE/Dice: always float32 on same device as ``like``."""
+    x = t.to(device=like.device, dtype=torch.float32, non_blocking=True)
+    if x.numel() > 0 and x.max() > 1.0:
+        x = x / 255.0
+    return x.clamp(0.0, 1.0)
+
+
 class DiceLoss(nn.Module):
     """Differentiable Dice loss for binary segmentation."""
 
@@ -289,7 +298,8 @@ class DiceLoss(nn.Module):
         self.smooth = smooth
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        pred = torch.sigmoid(pred)
+        pred = torch.sigmoid(pred.float())
+        target = _mask_to_float01(target, like=pred)
         pred_flat = pred.view(-1)
         target_flat = target.view(-1)
         intersection = (pred_flat * target_flat).sum()
@@ -309,6 +319,8 @@ class BCEDiceLoss(nn.Module):
         self.dice_weight = dice_weight
 
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        pred = pred.float()
+        target = _mask_to_float01(target, like=pred)
         return self.bce_weight * self.bce(pred, target) + self.dice_weight * self.dice(pred, target)
 
 
@@ -327,7 +339,7 @@ def train_one_epoch_unet(
     n_batches = 0
     for i, (images, masks) in enumerate(loader):
         images = images.to(device)
-        masks = masks.to(device)
+        masks = _mask_to_float01(masks, like=images)
 
         optimizer.zero_grad(set_to_none=True)
         preds = model(images)
@@ -362,7 +374,7 @@ def validate_one_epoch_unet(
     n_batches = 0
     for images, masks in loader:
         images = images.to(device)
-        masks = masks.to(device)
+        masks = _mask_to_float01(masks, like=images)
         preds = model(images)
         loss = criterion(preds, masks)
         if math.isfinite(loss.item()):
@@ -386,7 +398,7 @@ def evaluate_unet_metrics(
 
     for images, masks in loader:
         images = images.to(device)
-        masks = masks.to(device)
+        masks = _mask_to_float01(masks, like=images)
         preds = torch.sigmoid(model(images))
         preds_bin = (preds > threshold).float()
 
@@ -455,9 +467,12 @@ def train_unet(config: dict, script_dir: Path) -> dict:
         num_workers=config.get("num_workers", 0),
     )
     test_loader = torch.utils.data.DataLoader(
-        test_ds, batch_size=unet_cfg.get("batch_size", 16),
-        shuffle=False, num_workers=config.get("num_workers", 0),
+        test_ds,
+        batch_size=unet_cfg.get("batch_size", 16),
+        shuffle=False,
+        num_workers=config.get("num_workers", 0),
         pin_memory=torch.cuda.is_available(),
+        collate_fn=unet_collate_fn,
     )
 
     model = build_unet_model(config)

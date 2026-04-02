@@ -24,10 +24,17 @@ tqdm>=4.65.0
 scikit-learn>=1.3.0
 pycocotools>=2.0.6
 
+# YOLO11m + U-Net++ experiment
+ultralytics>=8.3.0
+segmentation-models-pytorch>=0.3.4
+
 # Config
 pyyaml>=6.0
 
 # Notebooks
 jupyter>=1.0.0
 ipywidgets>=8.0.0
+
+# Document processing
+python-docx>=1.0.0
 

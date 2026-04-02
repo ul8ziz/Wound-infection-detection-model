@@ -4,10 +4,10 @@
 
 # === General ===
 seed: 42
-data_root: "../../data/wound_focus_clean"
-ann_train: "../../data/wound_focus_clean/train_wound_only.json"
-ann_val: "../../data/wound_focus_clean/val_wound_only.json"
-ann_test: "../../data/wound_focus_clean/test_wound_only.json"
+data_root: "data/wound_focus_clean"
+ann_train: "data/wound_focus_clean/train_wound_only.json"
+ann_val: "data/wound_focus_clean/val_wound_only.json"
+ann_test: "data/wound_focus_clean/test_wound_only.json"
 num_workers: 0   # Windows-safe default; increase on Linux
 
 # === YOLO11m-seg (Stage 1: Detection + Coarse Segmentation) ===

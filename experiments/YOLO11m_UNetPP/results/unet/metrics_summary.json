@@ -1,0 +1,33 @@
+{
+  "best_dice": 0.7736762225787004,
+  "best_epoch": 13,
+  "training_time_s": 496.4565451145172,
+  "test_metrics": {
+    "dice": 0.7679131923702751,
+    "iou": 0.6370971998054396,
+    "pixel_accuracy": 0.8751292873073269,
+    "n_samples": 74
+  },
+  "config": {
+    "encoder": "efficientnet-b3",
+    "encoder_weights": "imagenet",
+    "input_size": [
+      256,
+      256
+    ],
+    "in_channels": 3,
+    "classes": 1,
+    "batch_size": 16,
+    "epochs": 50,
+    "lr": 0.0001,
+    "weight_decay": 0.0001,
+    "optimizer": "AdamW",
+    "scheduler": "CosineAnnealingLR",
+    "scheduler_T_max": 50,
+    "scheduler_eta_min": 1e-06,
+    "early_stop_patience": 10,
+    "loss_bce_weight": 0.5,
+    "loss_dice_weight": 0.5,
+    "roi_padding": 0.1
+  }
+}

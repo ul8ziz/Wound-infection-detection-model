@@ -1,0 +1,131 @@
+{
+  "yolo": {
+    "epoch": 75.0,
+    "time": 1444.27,
+    "train/box_loss": 1.14181,
+    "train/seg_loss": 2.47407,
+    "train/cls_loss": 0.67234,
+    "train/dfl_loss": 1.0943,
+    "train/sem_loss": 0.0,
+    "metrics/precision(B)": 0.92615,
+    "metrics/recall(B)": 0.77647,
+    "metrics/mAP50(B)": 0.86848,
+    "metrics/mAP50-95(B)": 0.51929,
+    "metrics/precision(M)": 0.84423,
+    "metrics/recall(M)": 0.69412,
+    "metrics/mAP50(M)": 0.72703,
+    "metrics/mAP50-95(M)": 0.21484,
+    "val/box_loss": 1.4622,
+    "val/seg_loss": 2.87841,
+    "val/cls_loss": 0.87359,
+    "val/dfl_loss": 1.28186,
+    "val/sem_loss": 0.0,
+    "lr/pg0": 0.002674,
+    "lr/pg1": 0.002674,
+    "lr/pg2": 0.002674,
+    "training_completed": true,
+    "bbox_mAP50": 0.7636047020466348,
+    "bbox_mAP50_95": 0.49401128688516893,
+    "segm_mAP50": 0.6230238060060611,
+    "segm_mAP50_95": 0.23475563267275615,
+    "combined_AP50": 0.6933142540263479
+  },
+  "unet": {
+    "best_dice": 0.7736762225787004,
+    "best_epoch": 13,
+    "training_time_s": 496.4565451145172,
+    "test_metrics": {
+      "dice": 0.7679131923702751,
+      "iou": 0.6370971998054396,
+      "pixel_accuracy": 0.8751292873073269,
+      "n_samples": 74
+    },
+    "config": {
+      "encoder": "efficientnet-b3",
+      "encoder_weights": "imagenet",
+      "input_size": [
+        256,
+        256
+      ],
+      "in_channels": 3,
+      "classes": 1,
+      "batch_size": 16,
+      "epochs": 50,
+      "lr": 0.0001,
+      "weight_decay": 0.0001,
+      "optimizer": "AdamW",
+      "scheduler": "CosineAnnealingLR",
+      "scheduler_T_max": 50,
+      "scheduler_eta_min": 1e-06,
+      "early_stop_patience": 10,
+      "loss_bce_weight": 0.5,
+      "loss_dice_weight": 0.5,
+      "roi_padding": 0.1
+    }
+  },
+  "combined": {
+    "mean_dice": 0.6800006182761039,
+    "mean_iou": 0.550794964013858,
+    "n_images_evaluated": 50,
+    "n_predictions_saved": 8
+  },
+  "config": {
+    "seed": 42,
+    "data_root": "data/wound_focus_clean",
+    "ann_train": "data/wound_focus_clean/train_wound_only.json",
+    "ann_val": "data/wound_focus_clean/val_wound_only.json",
+    "ann_test": "data/wound_focus_clean/test_wound_only.json",
+    "num_workers": 0,
+    "yolo": {
+      "model": "yolo11m-seg.pt",
+      "image_size": 640,
+      "batch_size": 8,
+      "epochs": 100,
+      "lr0": 0.01,
+      "lrf": 0.01,
+      "optimizer": "SGD",
+      "momentum": 0.937,
+      "weight_decay": 0.0005,
+      "patience": 20,
+      "degrees": 10,
+      "perspective": 0.0,
+      "flipud": 0.5,
+      "fliplr": 0.5,
+      "mosaic": 1.0,
+      "mixup": 0.1,
+      "hsv_h": 0.015,
+      "hsv_s": 0.7,
+      "hsv_v": 0.4
+    },
+    "unet": {
+      "encoder": "efficientnet-b3",
+      "encoder_weights": "imagenet",
+      "input_size": [
+        256,
+        256
+      ],
+      "in_channels": 3,
+      "classes": 1,
+      "batch_size": 16,
+      "epochs": 50,
+      "lr": 0.0001,
+      "weight_decay": 0.0001,
+      "optimizer": "AdamW",
+      "scheduler": "CosineAnnealingLR",
+      "scheduler_T_max": 50,
+      "scheduler_eta_min": 1e-06,
+      "early_stop_patience": 10,
+      "loss_bce_weight": 0.5,
+      "loss_dice_weight": 0.5,
+      "roi_padding": 0.1
+    },
+    "combined": {
+      "yolo_conf_thresh": 0.5,
+      "unet_mask_thresh": 0.5,
+      "roi_padding": 0.1,
+      "pixels_per_cm": 26.0,
+      "num_qualitative_samples": 8
+    }
+  },
+  "timestamp": "2026-03-30T00:06:49.042705"
+}

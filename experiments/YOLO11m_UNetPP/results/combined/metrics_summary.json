@@ -1,0 +1,6 @@
+{
+  "mean_dice": 0.6800006182761039,
+  "mean_iou": 0.550794964013858,
+  "n_images_evaluated": 50,
+  "n_predictions_saved": 8
+}
