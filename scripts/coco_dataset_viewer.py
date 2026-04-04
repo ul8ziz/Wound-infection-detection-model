@@ -6,9 +6,9 @@ Supports --check mode to validate dataset and report issues.
 
 Usage:
     cd scripts
-    python coco_dataset_viewer.py -i ../data -a ../data/splits/val.json
-    python coco_dataset_viewer.py -i ../data -a ../data/annotations_cleaned.json
-    python coco_dataset_viewer.py --check -a ../data/splits/val.json
+    python coco_dataset_viewer.py
+    python coco_dataset_viewer.py -i ../data/wound_focus_clean -a ../data/wound_focus_clean/val_wound_only.json
+    python coco_dataset_viewer.py --check
 
 Keyboard: Left/Right or j/k to navigate, Home/End for first/last image, b/l/m to toggle bboxes/labels/masks, space to toggle all.
 File > Load annotations... (Ctrl+O) to switch to a different JSON file.
@@ -39,6 +39,9 @@ logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
 PROJECT_ROOT = SCRIPT_DIR.parent
+# Default dataset: standardized wound-only splits (images under <root>/images/...)
+DEFAULT_DATA_ROOT = PROJECT_ROOT / "data" / "wound_focus_clean"
+DEFAULT_ANNOTATIONS = DEFAULT_DATA_ROOT / "val_wound_only.json"
 
 parser = argparse.ArgumentParser(
     description="View images with bboxes/masks from COCO dataset, or validate with --check"
@@ -48,14 +51,14 @@ parser.add_argument(
     default="",
     type=str,
     metavar="PATH",
-    help="Path to images root (e.g. ../data; file_name is relative to this)",
+    help="Path to images root (e.g. ../data/wound_focus_clean; file_name is relative to this)",
 )
 parser.add_argument(
     "-a", "--annotations",
     default="",
     type=str,
     metavar="PATH",
-    help="Path to annotations JSON (e.g. ../data/splits/val.json)",
+    help="Path to annotations JSON (e.g. ../data/wound_focus_clean/val_wound_only.json)",
 )
 parser.add_argument(
     "--check",
@@ -78,7 +81,7 @@ class Data:
     def prepare_image(self, object_based_coloring: bool = False):
         """Prepares image path, objects, and colors for current image."""
         img_id, img_name = self.current_image
-        full_path = os.path.join(self.image_dir, img_name) if self.image_dir else None
+        full_path = resolve_coco_image_path(self.image_dir, img_name) if self.image_dir else None
 
         objects = [obj for obj in self.instances["annotations"] if obj["image_id"] == img_id]
         obj_categories_ids = [obj["category_id"] for obj in objects]
@@ -131,6 +134,37 @@ def load_annotations(fname: str) -> dict:
     with open(path, encoding="utf-8") as f:
         instances = json.load(f)
     return instances
+
+
+def resolve_coco_image_path(image_dir: Path, file_name: str) -> str:
+    """Join COCO ``file_name`` to ``image_dir``.
+
+    If the JSON stores paths like ``original_data/task_0/data/x.jpg`` but the user
+    selects ``.../original_data`` as the images root, the naive join would look for
+    ``.../original_data/original_data/...``. Strip leading segments while they repeat
+    ``image_dir.name`` so both layouts work.
+    """
+    if not image_dir or not file_name:
+        return ""
+    fn = file_name.replace("\\", "/").strip()
+    root_name = image_dir.name
+    rel = fn
+    while True:
+        candidate = image_dir.joinpath(*[p for p in rel.split("/") if p])
+        if candidate.exists():
+            return str(candidate.resolve())
+        parts = rel.split("/", 1)
+        if len(parts) < 2 or parts[0] != root_name:
+            return str(image_dir.joinpath(*[p for p in fn.split("/") if p]).resolve())
+        rel = parts[1]
+
+
+def resolve_annotation_path(ann: str) -> Path:
+    """Resolve annotations path the same way as load_annotations (for existence checks)."""
+    path = Path(ann)
+    if not path.is_absolute():
+        path = (SCRIPT_DIR / path).resolve()
+    return path
 
 
 def get_images(instances: dict) -> list:
@@ -340,8 +374,8 @@ def check_dataset(annotations_path: str, images_root: str) -> int:
     missing = []
     for img_id, img in images.items():
         fn = img.get("file_name", "")
-        full = img_root / fn
-        if not full.exists():
+        resolved = resolve_coco_image_path(img_root, fn)
+        if not resolved or not Path(resolved).exists():
             missing.append(fn)
     if missing:
         logging.warning(f"Missing images ({len(missing)}): {missing[:5]}{'...' if len(missing) > 5 else ''}")
@@ -888,8 +922,8 @@ def main():
     args = parser.parse_args()
 
     if args.check:
-        ann = args.annotations or str(PROJECT_ROOT / "data" / "splits" / "val.json")
-        img_root = args.images or str(PROJECT_ROOT / "data")
+        ann = args.annotations or str(DEFAULT_ANNOTATIONS)
+        img_root = args.images or str(DEFAULT_DATA_ROOT)
         issues = check_dataset(ann, img_root)
         sys.exit(1 if issues > 0 else 0)
 
@@ -900,12 +934,38 @@ def main():
     root = tk.Tk()
     root.title("COCO Dataset Viewer - Wound Detection")
 
-    ann = args.annotations or str(PROJECT_ROOT / "data" / "splits" / "val.json")
-    img_root = args.images or str(PROJECT_ROOT / "data")
+    ann = args.annotations or str(DEFAULT_ANNOTATIONS)
+    img_root = args.images or str(DEFAULT_DATA_ROOT)
 
-    if not os.path.exists(ann):
-        messagebox.showerror("Error", f"Annotations not found: {ann}")
-        sys.exit(1)
+    resolved = resolve_annotation_path(ann)
+    if not resolved.exists():
+        messagebox.showinfo(
+            "Annotations not found",
+            f"The annotations file was not found:\n{resolved}\n\n"
+            f"Select the folder that contains «{resolved.name}», or cancel.",
+        )
+        folder = filedialog.askdirectory(
+            parent=root,
+            title=f"Select folder containing {resolved.name}",
+            mustexist=True,
+        )
+        if not folder:
+            sys.exit(0)
+        candidate = Path(folder) / resolved.name
+        if candidate.exists():
+            ann = str(candidate.resolve())
+        else:
+            picked = filedialog.askopenfilename(
+                parent=root,
+                title="JSON not in that folder — select annotations file",
+                initialdir=folder,
+                filetypes=(("JSON files", "*.json"), ("all files", "*.*")),
+            )
+            if not picked:
+                sys.exit(0)
+            ann = picked
+    else:
+        ann = str(resolved)
 
     data = Data(img_root, ann)
     statusbar = StatusBar(root)

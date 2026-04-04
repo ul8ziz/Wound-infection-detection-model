@@ -180,3 +180,5 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 /.venv_cuda
+
+# Do not commit a full upstream CVAT git clone into this repo; default clone path is ../cvat (sibling of repo root).

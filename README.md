@@ -84,6 +84,16 @@ Wound-infection-detection-model/
 │   └── augmented/                 # Augmented data (optional)
 │       ├── annotations_augmented.json
 │       └── images/
+│   └── cvat_clean_export/         # New CVAT exports only (does not replace original_data/)
+│       ├── tasks/
+│       ├── coco/
+│       └── splits/
+│
+├── cvat/                          # Self-hosted CVAT tooling (Docker helper + docs)
+│   ├── setup_cvat.py              # Clone upstream CVAT + docker compose; export folders
+│   ├── setup_cvat_ubuntu.sh       # Optional: apt install Docker on Ubuntu/Debian
+│   ├── CVAT_SETUP.md              # Installation and troubleshooting
+│   └── README.md
 │
 ├── experiments/
 │   └── maskrcnn/                  # Mask R-CNN experiments
@@ -108,7 +118,8 @@ Wound-infection-detection-model/
 ├── docs/
 │   ├── DATASET_BUILD_PIPELINE.md              # Full dataset build pipeline (stages 1 & 2)
 │   ├── WOUND_FOCUS_DATASET_DOCUMENTATION.md   # Stage 1: standardization details
-│   └── DATA_AUGMENTATION_GUIDE.md             # Augmentation guide
+│   ├── DATA_AUGMENTATION_GUIDE.md             # Augmentation guide
+│   └── CVAT_SETUP.md                          # Pointer to cvat/CVAT_SETUP.md
 │
 ├── checkpoints/                   # Saved models (created during training)
 ├── requirements.txt
@@ -142,6 +153,16 @@ pip install -r requirements.txt
 import torch
 print(torch.cuda.is_available())
 print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else "N/A")
+```
+
+### CVAT (optional, self-hosted)
+
+To run [CVAT](https://github.com/cvat-ai/cvat) locally for new or cleaned annotations, use Docker and see **[cvat/CVAT_SETUP.md](cvat/CVAT_SETUP.md)**. Quick helper (creates `data/cvat_clean_export/` for exports **without** touching `data/original_data/`):
+
+```bash
+python cvat/setup_cvat.py --only-folders   # folders only
+# or: python cvat/setup_cvat.py            # tries winget/choco to install Docker if missing (Windows), then clone + compose
+#     python cvat/setup_cvat.py --no-install-docker   # skip automatic Docker install attempt
 ```
 
 ---
@@ -280,6 +301,9 @@ python apply_augmentation_only.py
 | `scripts/build_wound_only_dataset.py` | Wound-only COCO, infection labels, splits |
 | `scripts/apply_augmentation_only.py` | Offline augmentation |
 | `scripts/augmentation_strategy.py` | Medical augmentation strategy |
+| `cvat/setup_cvat.py` | Optional CVAT Docker helper; creates `data/cvat_clean_export/` |
+| `cvat/setup_cvat_ubuntu.sh` | Optional: install Docker via apt on Ubuntu/Debian (`sudo`), then use `cvat/setup_cvat.py` |
+| `cvat/CVAT_SETUP.md` | Self-hosted CVAT installation and export paths |
 
 ---
 
