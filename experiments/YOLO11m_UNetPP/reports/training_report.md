@@ -1,6 +1,6 @@
 # YOLO11m + U-Net++ Training Report
 
-Generated: 2026-03-30 00:06:49
+Generated: 2026-04-05 20:35:18
 
 ---
 
@@ -11,8 +11,8 @@ Generated: 2026-03-30 00:06:49
 | Parameter | Value |
 |-----------|-------|
 | model | yolo11m-seg.pt |
-| image_size | 640 |
-| batch_size | 8 |
+| image_size | 1024 |
+| batch_size | 4 |
 | epochs | 100 |
 | lr0 | 0.01 |
 | lrf | 0.01 |
@@ -24,8 +24,9 @@ Generated: 2026-03-30 00:06:49
 | perspective | 0.0 |
 | flipud | 0.5 |
 | fliplr | 0.5 |
-| mosaic | 1.0 |
-| mixup | 0.1 |
+| mosaic | 0.5 |
+| mixup | 0.0 |
+| close_mosaic | 15 |
 | hsv_h | 0.015 |
 | hsv_s | 0.7 |
 | hsv_v | 0.4 |
@@ -34,32 +35,36 @@ Generated: 2026-03-30 00:06:49
 
 | Parameter | Value |
 |-----------|-------|
-| encoder | efficientnet-b3 |
+| encoder | efficientnet-b1 |
 | encoder_weights | imagenet |
 | input_size | [256, 256] |
 | in_channels | 3 |
 | classes | 1 |
 | batch_size | 16 |
-| epochs | 50 |
+| epochs | 35 |
 | lr | 0.0001 |
 | weight_decay | 0.0001 |
 | optimizer | AdamW |
 | scheduler | CosineAnnealingLR |
-| scheduler_T_max | 50 |
+| scheduler_T_max | 35 |
 | scheduler_eta_min | 1e-06 |
-| early_stop_patience | 10 |
+| early_stop_patience | 6 |
+| loss_type | focal_dice |
 | loss_bce_weight | 0.5 |
 | loss_dice_weight | 0.5 |
+| focal_alpha | 0.25 |
+| focal_gamma | 2.0 |
 | roi_padding | 0.1 |
 
 ### COMBINED
 
 | Parameter | Value |
 |-----------|-------|
-| yolo_conf_thresh | 0.5 |
+| yolo_conf_thresh | 0.25 |
 | unet_mask_thresh | 0.5 |
 | roi_padding | 0.1 |
 | pixels_per_cm | 26.0 |
+| marker_real_cm | 3.0 |
 | num_qualitative_samples | 8 |
 
 
@@ -69,50 +74,50 @@ Generated: 2026-03-30 00:06:49
 
 | Metric | Value |
 |--------|-------|
-| epoch | 75.0000 |
-| time | 1444.2700 |
-| train/box_loss | 1.1418 |
-| train/seg_loss | 2.4741 |
-| train/cls_loss | 0.6723 |
-| train/dfl_loss | 1.0943 |
+| epoch | 56.0000 |
+| time | 8043.9600 |
+| train/box_loss | 1.2005 |
+| train/seg_loss | 2.4889 |
+| train/cls_loss | 0.7703 |
+| train/dfl_loss | 1.2847 |
 | train/sem_loss | 0.0000 |
-| metrics/precision(B) | 0.9262 |
-| metrics/recall(B) | 0.7765 |
-| metrics/mAP50(B) | 0.8685 |
-| metrics/mAP50-95(B) | 0.5193 |
-| metrics/precision(M) | 0.8442 |
-| metrics/recall(M) | 0.6941 |
-| metrics/mAP50(M) | 0.7270 |
-| metrics/mAP50-95(M) | 0.2148 |
-| val/box_loss | 1.4622 |
-| val/seg_loss | 2.8784 |
-| val/cls_loss | 0.8736 |
-| val/dfl_loss | 1.2819 |
+| metrics/precision(B) | 0.8279 |
+| metrics/recall(B) | 0.8118 |
+| metrics/mAP50(B) | 0.8237 |
+| metrics/mAP50-95(B) | 0.4912 |
+| metrics/precision(M) | 0.7536 |
+| metrics/recall(M) | 0.6353 |
+| metrics/mAP50(M) | 0.6407 |
+| metrics/mAP50-95(M) | 0.2289 |
+| val/box_loss | 1.3983 |
+| val/seg_loss | 2.8013 |
+| val/cls_loss | 0.9343 |
+| val/dfl_loss | 1.4564 |
 | val/sem_loss | 0.0000 |
-| lr/pg0 | 0.0027 |
-| lr/pg1 | 0.0027 |
-| lr/pg2 | 0.0027 |
+| lr/pg0 | 0.0046 |
+| lr/pg1 | 0.0046 |
+| lr/pg2 | 0.0046 |
 | training_completed | True |
-| bbox_mAP50 | 0.7636 |
-| bbox_mAP50_95 | 0.4940 |
-| segm_mAP50 | 0.6230 |
-| segm_mAP50_95 | 0.2348 |
-| combined_AP50 | 0.6933 |
+| bbox_mAP50 | 0.7858 |
+| bbox_mAP50_95 | 0.4726 |
+| segm_mAP50 | 0.6772 |
+| segm_mAP50_95 | 0.2365 |
+| combined_AP50 | 0.7315 |
 
 ---
 
 ## U-Net++ Results
 
-- **Best Dice (val):** 0.7737 at epoch 13
-- **Training time:** 496s
+- **Best Dice (val):** 0.7676 at epoch 10
+- **Training time:** 734s
 
 ### Test Metrics
 
 | Metric | Value |
 |--------|-------|
-| dice | 0.7679 |
-| iou | 0.6371 |
-| pixel_accuracy | 0.8751 |
+| dice | 0.7817 |
+| iou | 0.6552 |
+| pixel_accuracy | 0.8775 |
 
 ---
 
@@ -120,7 +125,20 @@ Generated: 2026-03-30 00:06:49
 
 | Metric | Value |
 |--------|-------|
-| mean_dice | 0.6800 |
-| mean_iou | 0.5508 |
-| n_images_evaluated | 50 |
+| mean_dice | 0.7076 |
+| mean_iou | 0.5780 |
+| n_images_evaluated | 51 |
 | n_predictions_saved | 8 |
+| coco_bbox_AP | 0.1707 |
+| coco_bbox_AP50 | 0.5981 |
+| coco_bbox_AP75 | 0.0124 |
+| coco_segm_AP | 0.1888 |
+| coco_segm_AP50 | 0.5794 |
+| coco_segm_AP75 | 0.0422 |
+| coco_combined_AP50 | 0.5888 |
+
+---
+
+## Infection Classification Results
+
+*Not available.*

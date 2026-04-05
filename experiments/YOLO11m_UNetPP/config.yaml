@@ -4,17 +4,24 @@
 
 # === General ===
 seed: 42
+# Main data root: val/test images + labels (unchanged splits)
 data_root: "data/wound_focus_clean"
-ann_train: "data/wound_focus_clean/train_wound_only.json"
+# Offline-augmented training set (~4× images). Labels + images under this folder.
+data_root_train: "data/wound_focus_clean/augmented"
+ann_train: "data/wound_focus_clean/augmented/train_augmented.json"
 ann_val: "data/wound_focus_clean/val_wound_only.json"
 ann_test: "data/wound_focus_clean/test_wound_only.json"
 num_workers: 0   # Windows-safe default; increase on Linux
+# Class list for YOLO training.  Options:
+#   ["wound"]            — wound-only mode (default, single-class)
+#   ["wound", "marker"]  — wound + 3x3 cm marker (enables dynamic calibration)
+classes: ["wound"]
 
 # === YOLO11m-seg (Stage 1: Detection + Coarse Segmentation) ===
 yolo:
   model: "yolo11m-seg.pt"
-  image_size: 640
-  batch_size: 8
+  image_size: 1024
+  batch_size: 4
   epochs: 100
   lr0: 0.01
   lrf: 0.01
@@ -27,36 +34,44 @@ yolo:
   perspective: 0.0
   flipud: 0.5
   fliplr: 0.5
-  mosaic: 1.0
-  mixup: 0.1
+  mosaic: 0.5
+  mixup: 0.0
+  close_mosaic: 15
   hsv_h: 0.015
   hsv_s: 0.7
   hsv_v: 0.4
 
 # === U-Net++ (Stage 2: Refined Segmentation on ROI crops) ===
+# Default below is a "fast training" preset (shorter wall-clock). For maximum ROI
+# detail, use e.g. input_size [384, 384], encoder efficientnet-b3, epochs 50,
+# scheduler_T_max 50, early_stop_patience 10 (see README / DOCUMENTATION).
 unet:
-  encoder: "efficientnet-b3"
+  encoder: "efficientnet-b1"
   encoder_weights: "imagenet"
   input_size: [256, 256]
   in_channels: 3
   classes: 1
   batch_size: 16
-  epochs: 50
+  epochs: 35
   lr: 0.0001
   weight_decay: 0.0001
   optimizer: "AdamW"
   scheduler: "CosineAnnealingLR"
-  scheduler_T_max: 50
+  scheduler_T_max: 35
   scheduler_eta_min: 0.000001
-  early_stop_patience: 10
+  early_stop_patience: 6
+  loss_type: "focal_dice"
   loss_bce_weight: 0.5
   loss_dice_weight: 0.5
+  focal_alpha: 0.25
+  focal_gamma: 2.0
   roi_padding: 0.1
 
 # === Combined Inference ===
 combined:
-  yolo_conf_thresh: 0.5
+  yolo_conf_thresh: 0.25
   unet_mask_thresh: 0.5
   roi_padding: 0.1
   pixels_per_cm: 26.0
+  marker_real_cm: 3.0
   num_qualitative_samples: 8

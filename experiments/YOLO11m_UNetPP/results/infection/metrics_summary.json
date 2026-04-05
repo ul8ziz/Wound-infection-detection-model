@@ -1,0 +1,9 @@
+{
+  "train_accuracy": 0.7266880869865417,
+  "precision": 0.6387096774193548,
+  "recall": 0.7734375,
+  "f1_score": 0.6996466431095406,
+  "n_samples": 311,
+  "n_infected": 128,
+  "n_non_infected": 183
+}

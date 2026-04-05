@@ -2,15 +2,21 @@
 YOLO11m + U-Net++ Wound Detection & Segmentation — Training Script
 ====================================================================
 
+**Primary training entry point for this experiment:** ``training_pipeline.ipynb``
+(run with kernel cwd = ``experiments/YOLO11m_UNetPP``). This module provides the
+same functions for import and an optional CLI for automation — not the main
+workflow for thesis runs.
+
 Self-contained training, evaluation, inference and reporting for the
 combined YOLO11m-seg + U-Net++ pipeline.
 
-Stages (CLI):
-    python train_model.py --stage convert   # COCO -> YOLO label format
-    python train_model.py --stage yolo      # Train YOLO11m-seg
-    python train_model.py --stage unet      # Train U-Net++
-    python train_model.py --stage combined  # Combined inference + eval
-    python train_model.py --stage all       # Run all stages sequentially
+Stages (CLI, optional):
+    python train_model.py --stage convert    # COCO -> YOLO label format
+    python train_model.py --stage yolo       # Train YOLO11m-seg
+    python train_model.py --stage unet       # Train U-Net++
+    python train_model.py --stage combined   # Combined inference + eval
+    python train_model.py --stage infection  # Train infection classifier
+    python train_model.py --stage all        # Run all stages sequentially
 
 Outputs:
     checkpoints/yolo/   — YOLO best & last weights
@@ -124,8 +130,9 @@ def train_yolo(config: dict, script_dir: Path) -> dict:
         perspective=yolo_cfg.get("perspective", 0.0),
         flipud=yolo_cfg.get("flipud", 0.5),
         fliplr=yolo_cfg.get("fliplr", 0.5),
-        mosaic=yolo_cfg.get("mosaic", 1.0),
-        mixup=yolo_cfg.get("mixup", 0.1),
+        mosaic=yolo_cfg.get("mosaic", 0.5),
+        mixup=yolo_cfg.get("mixup", 0.0),
+        close_mosaic=yolo_cfg.get("close_mosaic", 15),
         hsv_h=yolo_cfg.get("hsv_h", 0.015),
         hsv_s=yolo_cfg.get("hsv_s", 0.7),
         hsv_v=yolo_cfg.get("hsv_v", 0.4),
@@ -273,7 +280,7 @@ def build_unet_model(config: dict) -> nn.Module:
     import segmentation_models_pytorch as smp
     unet_cfg = config["unet"]
     model = smp.UnetPlusPlus(
-        encoder_name=unet_cfg.get("encoder", "efficientnet-b3"),
+        encoder_name=unet_cfg.get("encoder", "efficientnet-b1"),
         encoder_weights=unet_cfg.get("encoder_weights", "imagenet"),
         in_channels=unet_cfg.get("in_channels", 3),
         classes=unet_cfg.get("classes", 1),
@@ -308,8 +315,25 @@ class DiceLoss(nn.Module):
         )
 
 
+class FocalLoss(nn.Module):
+    """Binary focal loss for segmentation (focuses on hard boundary pixels)."""
+
+    def __init__(self, alpha: float = 0.25, gamma: float = 2.0):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        pred = pred.float()
+        target = _mask_to_float01(target, like=pred)
+        bce = nn.functional.binary_cross_entropy_with_logits(pred, target, reduction="none")
+        p_t = torch.sigmoid(pred) * target + (1 - torch.sigmoid(pred)) * (1 - target)
+        focal_weight = self.alpha * (1 - p_t) ** self.gamma
+        return (focal_weight * bce).mean()
+
+
 class BCEDiceLoss(nn.Module):
-    """Combined BCE + Dice loss."""
+    """Combined BCE + Dice loss (legacy, kept for checkpoint compatibility)."""
 
     def __init__(self, bce_weight: float = 0.5, dice_weight: float = 0.5):
         super().__init__()
@@ -322,6 +346,27 @@ class BCEDiceLoss(nn.Module):
         pred = pred.float()
         target = _mask_to_float01(target, like=pred)
         return self.bce_weight * self.bce(pred, target) + self.dice_weight * self.dice(pred, target)
+
+
+class FocalDiceLoss(nn.Module):
+    """Combined Focal + Dice loss for better boundary segmentation."""
+
+    def __init__(
+        self,
+        focal_weight: float = 0.5,
+        dice_weight: float = 0.5,
+        alpha: float = 0.25,
+        gamma: float = 2.0,
+    ):
+        super().__init__()
+        self.focal = FocalLoss(alpha=alpha, gamma=gamma)
+        self.dice = DiceLoss()
+        self.focal_weight = focal_weight
+        self.dice_weight = dice_weight
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        return (self.focal_weight * self.focal(pred, target)
+                + self.dice_weight * self.dice(pred, target))
 
 
 def train_one_epoch_unet(
@@ -449,8 +494,30 @@ def load_unet_checkpoint(model: nn.Module, path: Path, device: torch.device) -> 
     return ckpt
 
 
+def build_unet_criterion(unet_cfg: dict) -> nn.Module:
+    """Build U-Net++ loss from ``config['unet']`` (same logic as ``train_unet`` / notebook)."""
+    loss_type = unet_cfg.get("loss_type", "focal_dice")
+    if loss_type == "focal_dice":
+        return FocalDiceLoss(
+            focal_weight=unet_cfg.get("loss_bce_weight", 0.5),
+            dice_weight=unet_cfg.get("loss_dice_weight", 0.5),
+            alpha=unet_cfg.get("focal_alpha", 0.25),
+            gamma=unet_cfg.get("focal_gamma", 2.0),
+        )
+    return BCEDiceLoss(
+        bce_weight=unet_cfg.get("loss_bce_weight", 0.5),
+        dice_weight=unet_cfg.get("loss_dice_weight", 0.5),
+    )
+
+
 def train_unet(config: dict, script_dir: Path) -> dict:
-    """Full U-Net++ training loop with early stopping."""
+    """Full U-Net++ training loop with early stopping.
+
+    **Best checkpoint:** ``best_model.pth`` is the weights from the validation epoch
+    with the **highest mean Dice** on ``val`` (macro average over ROI crops in
+    ``evaluate_unet_metrics``). Test metrics are computed after reloading that
+    checkpoint — not from ``last_checkpoint.pth``.
+    """
     print("\n" + "=" * 60)
     print("Stage 2: Training U-Net++")
     print("=" * 60)
@@ -479,10 +546,7 @@ def train_unet(config: dict, script_dir: Path) -> dict:
     model.to(device)
     print(f"  U-Net++ on {device} ({sum(p.numel() for p in model.parameters()):,} params)")
 
-    criterion = BCEDiceLoss(
-        bce_weight=unet_cfg.get("loss_bce_weight", 0.5),
-        dice_weight=unet_cfg.get("loss_dice_weight", 0.5),
-    )
+    criterion = build_unet_criterion(unet_cfg)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=unet_cfg.get("lr", 1e-4),
@@ -507,7 +571,8 @@ def train_unet(config: dict, script_dir: Path) -> dict:
         "dice_per_epoch": [],
         "iou_per_epoch": [],
     }
-    best_dice = 0.0
+    # Start below any valid Dice in [0, 1] so epoch 1 with val Dice 0.0 still saves best.
+    best_dice = -1.0
     best_epoch = 0
     epochs_without_improve = 0
 
@@ -522,6 +587,10 @@ def train_unet(config: dict, script_dir: Path) -> dict:
             )
             val_loss = validate_one_epoch_unet(model, val_loader, criterion, device)
             metrics = evaluate_unet_metrics(model, val_loader, device)
+            val_dice = metrics["dice"]
+            if not math.isfinite(val_dice):
+                print(f"  [WARNING] Non-finite val Dice — skipping best update for this epoch.")
+                val_dice = best_dice
 
             history["train_losses"].append(train_loss)
             history["val_losses"].append(val_loss)
@@ -531,11 +600,11 @@ def train_unet(config: dict, script_dir: Path) -> dict:
             print(f"  Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
             print(f"  Dice: {metrics['dice']:.4f} | IoU: {metrics['iou']:.4f}")
 
-            if metrics["dice"] > best_dice:
-                best_dice = metrics["dice"]
+            if val_dice > best_dice:
+                best_dice = val_dice
                 best_epoch = epoch
                 epochs_without_improve = 0
-                print(f"  -> NEW BEST Dice: {best_dice:.4f}")
+                print(f"  -> NEW BEST val Dice: {best_dice:.4f}")
                 save_unet_checkpoint(
                     model, optimizer, scheduler, epoch, metrics,
                     ckpt_dir / "best_model.pth",
@@ -630,6 +699,66 @@ def save_unet_training_curves(history: dict, results_dir: Path) -> None:
 # Stage 3: Combined Pipeline
 # ============================================================================
 
+def _unet_predict_with_tta(
+    unet_model: nn.Module,
+    crop_tensor: torch.Tensor,
+    mask_thresh: float,
+    enable_tta: bool = True,
+) -> np.ndarray:
+    """
+    Run U-Net++ prediction with optional test-time augmentation.
+
+    Averages sigmoid probabilities from the original and horizontally-flipped
+    crop before thresholding, improving boundary precision without retraining.
+    """
+    pred = torch.sigmoid(unet_model(crop_tensor))
+
+    if enable_tta:
+        flipped = torch.flip(crop_tensor, dims=[-1])
+        pred_flip = torch.sigmoid(unet_model(flipped))
+        pred_flip = torch.flip(pred_flip, dims=[-1])
+        pred = (pred + pred_flip) * 0.5
+
+    return (pred > mask_thresh).squeeze().cpu().numpy().astype(np.uint8)
+
+
+def _mask_nms(
+    masks: List[np.ndarray],
+    boxes: List[List[int]],
+    scores: List[float],
+    iou_thresh: float = 0.5,
+) -> Tuple[List[np.ndarray], List[List[int]], List[float]]:
+    """IoU-based NMS on refined masks to remove duplicate detections."""
+    if len(masks) <= 1:
+        return masks, boxes, scores
+
+    order = np.argsort(scores)[::-1]
+    keep_masks, keep_boxes, keep_scores = [], [], []
+
+    while len(order) > 0:
+        idx = order[0]
+        keep_masks.append(masks[idx])
+        keep_boxes.append(boxes[idx])
+        keep_scores.append(scores[idx])
+
+        if len(order) == 1:
+            break
+
+        remaining = []
+        m_i = masks[idx].astype(float)
+        area_i = m_i.sum()
+        for j in order[1:]:
+            m_j = masks[j].astype(float)
+            inter = (m_i * m_j).sum()
+            area_j = m_j.sum()
+            iou = inter / max(area_i + area_j - inter, 1e-6)
+            if iou < iou_thresh:
+                remaining.append(j)
+        order = np.array(remaining, dtype=int)
+
+    return keep_masks, keep_boxes, keep_scores
+
+
 @torch.no_grad()
 def combined_inference(
     yolo_model,
@@ -637,18 +766,20 @@ def combined_inference(
     image_path: str,
     device: torch.device,
     config: dict,
+    enable_tta: bool = True,
 ) -> Dict:
     """
     Two-stage inference on a single image.
 
     1. YOLO11m-seg detects wound bboxes + coarse masks
-    2. For each detection, crop ROI and run U-Net++ for refined mask
-    3. Map refined masks back to full image coordinates
+    2. For each detection, crop ROI and run U-Net++ for refined mask (with TTA)
+    3. Apply mask-level NMS to remove duplicate detections
+    4. Map refined masks back to full image coordinates
 
     Returns dict with boxes, masks, scores, wound area info.
     """
     combined_cfg = config.get("combined", {})
-    conf_thresh = combined_cfg.get("yolo_conf_thresh", 0.5)
+    conf_thresh = combined_cfg.get("yolo_conf_thresh", 0.25)
     mask_thresh = combined_cfg.get("unet_mask_thresh", 0.5)
     roi_padding = combined_cfg.get("roi_padding", 0.1)
     unet_size = tuple(config["unet"].get("input_size", [256, 256]))
@@ -666,6 +797,13 @@ def combined_inference(
     result = yolo_results[0]
     boxes_xyxy = result.boxes.xyxy.cpu().numpy() if result.boxes is not None else np.array([])
     scores = result.boxes.conf.cpu().numpy() if result.boxes is not None else np.array([])
+    classes = result.boxes.cls.cpu().numpy() if result.boxes is not None else np.array([])
+
+    marker_ppcm = calculate_pixels_per_cm_from_marker(
+        result,
+        marker_class_id=1,
+        marker_real_cm=combined_cfg.get("marker_real_cm", 3.0),
+    )
 
     refined_masks = []
     refined_boxes = []
@@ -675,7 +813,10 @@ def combined_inference(
     mean = torch.tensor(IMAGENET_MEAN).view(1, 3, 1, 1).to(device)
     std = torch.tensor(IMAGENET_STD).view(1, 3, 1, 1).to(device)
 
+    wound_class_id = 0
     for i, box in enumerate(boxes_xyxy):
+        if int(classes[i]) != wound_class_id:
+            continue
         x1, y1, x2, y2 = box
         bw, bh = x2 - x1, y2 - y1
         pad_x, pad_y = bw * roi_padding, bh * roi_padding
@@ -692,8 +833,9 @@ def combined_inference(
         crop_tensor = torch.from_numpy(crop_resized).permute(2, 0, 1).float().unsqueeze(0) / 255.0
         crop_tensor = (crop_tensor.to(device) - mean) / std
 
-        pred = torch.sigmoid(unet_model(crop_tensor))
-        pred_mask = (pred > mask_thresh).squeeze().cpu().numpy().astype(np.uint8)
+        pred_mask = _unet_predict_with_tta(
+            unet_model, crop_tensor, mask_thresh, enable_tta=enable_tta,
+        )
 
         full_mask = np.zeros((img_h, img_w), dtype=np.uint8)
         crop_h, crop_w = cy2 - cy1, cx2 - cx1
@@ -705,12 +847,46 @@ def combined_inference(
         refined_boxes.append([cx1, cy1, cx2, cy2])
         refined_scores.append(float(scores[i]))
 
+    refined_masks, refined_boxes, refined_scores = _mask_nms(
+        refined_masks, refined_boxes, refined_scores, iou_thresh=0.5,
+    )
+
     return {
         "boxes": refined_boxes,
         "masks": refined_masks,
         "scores": refined_scores,
         "image_shape": (img_h, img_w),
+        "pixels_per_cm": marker_ppcm,
     }
+
+
+def calculate_pixels_per_cm_from_marker(
+    yolo_result,
+    marker_class_id: int = 1,
+    marker_real_cm: float = 3.0,
+) -> Optional[float]:
+    """
+    Estimate pixels_per_cm from a detected 3x3 cm reference marker.
+
+    Uses the average of the marker bbox width and height to compute
+    the scale factor.  Returns None if no marker was detected.
+    """
+    if yolo_result.boxes is None:
+        return None
+
+    classes = yolo_result.boxes.cls.cpu().numpy()
+    boxes = yolo_result.boxes.xyxy.cpu().numpy()
+
+    marker_idxs = np.where(classes == marker_class_id)[0]
+    if len(marker_idxs) == 0:
+        return None
+
+    best_idx = marker_idxs[
+        yolo_result.boxes.conf.cpu().numpy()[marker_idxs].argmax()
+    ]
+    x1, y1, x2, y2 = boxes[best_idx]
+    marker_px = ((x2 - x1) + (y2 - y1)) / 2.0
+    return marker_px / marker_real_cm
 
 
 def calculate_wound_area(
@@ -720,6 +896,100 @@ def calculate_wound_area(
     """Calculate wound area in cm^2 from a binary mask."""
     wound_pixels = int(mask.sum())
     return wound_pixels / (pixels_per_cm ** 2)
+
+
+@torch.no_grad()
+def evaluate_combined_coco(
+    config: dict,
+    script_dir: Path,
+    yolo_model,
+    unet_model: nn.Module,
+    device: torch.device,
+) -> Dict[str, float]:
+    """Compute COCO-style AP metrics for the combined pipeline output.
+
+    Converts predicted masks to RLE, builds a COCO-format results list,
+    and evaluates using pycocotools.  Returns empty dict if pycocotools
+    is unavailable.
+    """
+    try:
+        from pycocotools.coco import COCO as CocoAPI
+        from pycocotools.cocoeval import COCOeval
+        from pycocotools import mask as mask_utils
+    except ImportError:
+        print("  [SKIP] pycocotools not available — COCO AP evaluation skipped.")
+        return {}
+
+    project_root = script_dir.parent.parent
+    test_ann_path = str((project_root / config["ann_test"]).resolve())
+    data_root = (project_root / config["data_root"]).resolve()
+
+    coco_gt = CocoAPI(test_ann_path)
+    img_ids = coco_gt.getImgIds()
+
+    bbox_results = []
+    segm_results = []
+
+    for img_id in img_ids:
+        img_info = coco_gt.loadImgs(img_id)[0]
+        img_path = str(data_root / img_info["file_name"])
+        if not Path(img_path).exists():
+            continue
+
+        pred = combined_inference(yolo_model, unet_model, img_path, device, config, enable_tta=True)
+        if "error" in pred or not pred["masks"]:
+            continue
+
+        orig_h, orig_w = img_info["height"], img_info["width"]
+
+        for mask_np, box, score in zip(pred["masks"], pred["boxes"], pred["scores"]):
+            if mask_np.shape != (orig_h, orig_w):
+                continue
+
+            rle = mask_utils.encode(np.asfortranarray(mask_np.astype(np.uint8)))
+            rle["counts"] = rle["counts"].decode("utf-8")
+
+            segm_results.append({
+                "image_id": img_id,
+                "category_id": 1,
+                "segmentation": rle,
+                "score": float(score),
+            })
+
+            x1, y1, x2, y2 = box
+            bbox_results.append({
+                "image_id": img_id,
+                "category_id": 1,
+                "bbox": [float(x1), float(y1), float(x2 - x1), float(y2 - y1)],
+                "score": float(score),
+            })
+
+    metrics = {}
+
+    for iou_type, results in [("bbox", bbox_results), ("segm", segm_results)]:
+        if not results:
+            continue
+        coco_dt = coco_gt.loadRes(results)
+        evaluator = COCOeval(coco_gt, coco_dt, iouType=iou_type)
+        evaluator.evaluate()
+        evaluator.accumulate()
+        evaluator.summarize()
+
+        metrics[f"coco_{iou_type}_AP"] = float(evaluator.stats[0])
+        metrics[f"coco_{iou_type}_AP50"] = float(evaluator.stats[1])
+        metrics[f"coco_{iou_type}_AP75"] = float(evaluator.stats[2])
+
+    if "coco_bbox_AP50" in metrics and "coco_segm_AP50" in metrics:
+        metrics["coco_combined_AP50"] = (
+            metrics["coco_bbox_AP50"] + metrics["coco_segm_AP50"]
+        ) / 2.0
+
+    results_dir = script_dir / "results" / "combined"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    with open(results_dir / "coco_metrics.json", "w", encoding="utf-8") as f:
+        json.dump(metrics, f, indent=2)
+
+    return metrics
 
 
 def evaluate_combined(config: dict, script_dir: Path) -> dict:
@@ -811,8 +1081,14 @@ def evaluate_combined(config: dict, script_dir: Path) -> dict:
         dice_scores.append(dice)
         iou_scores.append(iou)
 
-        area_cm2 = calculate_wound_area(combined_mask, pixels_per_cm)
-        wound_areas.append({"image": img_info["file_name"], "area_cm2": area_cm2})
+        effective_ppcm = pred.get("pixels_per_cm") or pixels_per_cm
+        area_cm2 = calculate_wound_area(combined_mask, effective_ppcm)
+        wound_areas.append({
+            "image": img_info["file_name"],
+            "area_cm2": area_cm2,
+            "pixels_per_cm": effective_ppcm,
+            "marker_detected": pred.get("pixels_per_cm") is not None,
+        })
 
         # Save qualitative prediction
         if saved_count < num_qual:
@@ -839,6 +1115,12 @@ def evaluate_combined(config: dict, script_dir: Path) -> dict:
         "n_predictions_saved": saved_count,
     }
 
+    coco_metrics = evaluate_combined_coco(
+        config, script_dir, yolo_model, unet_model, device,
+    )
+    if coco_metrics:
+        metrics.update(coco_metrics)
+
     with open(results_combined / "metrics_summary.json", "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)
     with open(results_combined / "wound_areas.json", "w", encoding="utf-8") as f:
@@ -846,9 +1128,263 @@ def evaluate_combined(config: dict, script_dir: Path) -> dict:
 
     print(f"\n  Mean Dice: {metrics['mean_dice']:.4f}")
     print(f"  Mean IoU:  {metrics['mean_iou']:.4f}")
+    if coco_metrics:
+        print(f"  COCO bbox AP50:  {coco_metrics.get('coco_bbox_AP50', 0):.4f}")
+        print(f"  COCO segm AP50:  {coco_metrics.get('coco_segm_AP50', 0):.4f}")
     print(f"  Images evaluated: {metrics['n_images_evaluated']}")
     print(f"  Predictions saved: {saved_count} to {pred_dir}")
     return metrics
+
+
+# ============================================================================
+# Stage 4: Infection Classification
+# ============================================================================
+
+class WoundInfectionClassifier(nn.Module):
+    """Lightweight infection classifier on wound ROI features.
+
+    Extracts texture/color statistics from the wound ROI and feeds them
+    through a small MLP to predict infected vs non-infected.
+    """
+
+    def __init__(self, in_features: int = 15, hidden: int = 64):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_features, hidden),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.3),
+            nn.Linear(hidden, hidden // 2),
+            nn.ReLU(inplace=True),
+            nn.Dropout(0.2),
+            nn.Linear(hidden // 2, 1),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+def extract_wound_features(image_rgb: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Extract texture/color features from wound region for classification.
+
+    Returns a 15-dim feature vector: [mean_r, mean_g, mean_b, std_r, std_g,
+    std_b, mean_h, mean_s, mean_v, std_h, std_s, std_v, wound_ratio,
+    perimeter_ratio, compactness].
+    """
+    if mask.sum() == 0:
+        return np.zeros(15, dtype=np.float32)
+
+    wound_pixels = image_rgb[mask > 0]
+    mean_rgb = wound_pixels.mean(axis=0) / 255.0
+    std_rgb = wound_pixels.std(axis=0) / 255.0
+
+    hsv = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2HSV)
+    wound_hsv = hsv[mask > 0]
+    mean_hsv = wound_hsv.mean(axis=0) / np.array([180.0, 255.0, 255.0])
+    std_hsv = wound_hsv.std(axis=0) / np.array([180.0, 255.0, 255.0])
+
+    wound_ratio = mask.sum() / max(mask.size, 1)
+
+    contours, _ = cv2.findContours(
+        mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE,
+    )
+    perimeter = sum(cv2.arcLength(c, True) for c in contours)
+    area = max(float(mask.sum()), 1.0)
+    perimeter_ratio = perimeter / max(np.sqrt(area), 1.0)
+    compactness = (4 * np.pi * area) / max(perimeter ** 2, 1.0)
+
+    return np.array([
+        *mean_rgb, *std_rgb, *mean_hsv, *std_hsv,
+        wound_ratio, perimeter_ratio, compactness,
+    ], dtype=np.float32)
+
+
+def _parse_infection_label(filename: str) -> Optional[int]:
+    """Parse infection label from filename. Returns 1=infected, 0=not_infected, None=unknown."""
+    name = filename.lower()
+    if "not_infected" in name or "-not-" in name:
+        return 0
+    if "infected" in name:
+        return 1
+    return None
+
+
+def train_infection_classifier(
+    config: dict,
+    script_dir: Path,
+) -> dict:
+    """
+    Train infection classifier using wound ROI features extracted via
+    the combined pipeline, with labels from filenames.
+    """
+    print("\n" + "=" * 60)
+    print("Stage 4: Training Infection Classifier")
+    print("=" * 60)
+
+    device = get_device()
+    project_root = script_dir.parent.parent
+    data_root = (project_root / config["data_root"]).resolve()
+    data_root_train = (project_root / config.get("data_root_train", config["data_root"])).resolve()
+
+    yolo_best = script_dir / "checkpoints" / "yolo" / "best.pt"
+    unet_best = script_dir / "checkpoints" / "unet" / "best_model.pth"
+    if not yolo_best.exists() or not unet_best.exists():
+        print("[ERROR] Train YOLO and U-Net++ first.")
+        return {}
+
+    yolo_model = build_yolo_model(str(yolo_best))
+    unet_model = build_unet_model(config)
+    load_unet_checkpoint(unet_model, unet_best, device)
+    unet_model.to(device)
+    unet_model.eval()
+
+    features_list = []
+    labels_list = []
+
+    for split, ann_key in [("train", "ann_train"), ("val", "ann_val")]:
+        ann_path = (project_root / config[ann_key]).resolve()
+        img_root = data_root_train if ann_key == "ann_train" else data_root
+        with open(ann_path, "r", encoding="utf-8") as f:
+            coco = json.load(f)
+
+        for img_info in coco["images"]:
+            label = _parse_infection_label(img_info["file_name"])
+            if label is None:
+                continue
+
+            img_path = str(img_root / img_info["file_name"])
+            if not Path(img_path).exists():
+                continue
+
+            pred = combined_inference(yolo_model, unet_model, img_path, device, config, enable_tta=False)
+            if "error" in pred or not pred["masks"]:
+                continue
+
+            image_rgb = cv2.cvtColor(cv2.imread(img_path), cv2.COLOR_BGR2RGB)
+            combined_mask = np.zeros(image_rgb.shape[:2], dtype=np.uint8)
+            for m in pred["masks"]:
+                if m.shape == image_rgb.shape[:2]:
+                    combined_mask = np.maximum(combined_mask, m)
+
+            feats = extract_wound_features(image_rgb, combined_mask)
+            features_list.append(feats)
+            labels_list.append(label)
+
+    if len(features_list) < 10:
+        print(f"[ERROR] Only {len(features_list)} samples — too few for training.")
+        return {}
+
+    X = torch.tensor(np.array(features_list), dtype=torch.float32)
+    y = torch.tensor(labels_list, dtype=torch.float32).unsqueeze(1)
+    print(f"  Samples: {len(X)} (infected={int(y.sum())}, non-infected={len(y) - int(y.sum())})")
+
+    feat_mean = X.mean(dim=0)
+    feat_std = X.std(dim=0).clamp(min=1e-6)
+    X_norm = (X - feat_mean) / feat_std
+
+    model = WoundInfectionClassifier(in_features=X.shape[1])
+    model.to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
+
+    pos_count = y.sum().item()
+    neg_count = len(y) - pos_count
+    pos_weight = torch.tensor([neg_count / max(pos_count, 1)]).to(device)
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+
+    X_norm = X_norm.to(device)
+    y = y.to(device)
+
+    model.train()
+    for epoch in range(1, 201):
+        optimizer.zero_grad()
+        logits = model(X_norm)
+        loss = criterion(logits, y)
+        loss.backward()
+        optimizer.step()
+
+        if epoch % 50 == 0:
+            with torch.no_grad():
+                preds = (torch.sigmoid(logits) > 0.5).float()
+                acc = (preds == y).float().mean().item()
+            print(f"  Epoch {epoch}: loss={loss.item():.4f}, acc={acc:.4f}")
+
+    ckpt_dir = script_dir / "checkpoints" / "infection"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    torch.save({
+        "model_state_dict": model.state_dict(),
+        "feat_mean": feat_mean.cpu(),
+        "feat_std": feat_std.cpu(),
+        "in_features": X.shape[1],
+    }, ckpt_dir / "infection_classifier.pth")
+
+    with torch.no_grad():
+        preds = (torch.sigmoid(model(X_norm)) > 0.5).float()
+        train_acc = (preds == y).float().mean().item()
+        tp = ((preds == 1) & (y == 1)).sum().item()
+        fp = ((preds == 1) & (y == 0)).sum().item()
+        fn = ((preds == 0) & (y == 1)).sum().item()
+        precision = tp / max(tp + fp, 1)
+        recall = tp / max(tp + fn, 1)
+        f1 = 2 * precision * recall / max(precision + recall, 1e-6)
+
+    summary = {
+        "train_accuracy": train_acc,
+        "precision": precision,
+        "recall": recall,
+        "f1_score": f1,
+        "n_samples": len(X),
+        "n_infected": int(pos_count),
+        "n_non_infected": int(neg_count),
+    }
+
+    results_dir = script_dir / "results" / "infection"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    with open(results_dir / "metrics_summary.json", "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+
+    for k, v in summary.items():
+        if isinstance(v, float):
+            print(f"  {k}: {v:.4f}")
+        else:
+            print(f"  {k}: {v}")
+
+    return summary
+
+
+def predict_infection(
+    image_rgb: np.ndarray,
+    wound_mask: np.ndarray,
+    classifier_path: Path,
+    device: torch.device,
+) -> Dict[str, float]:
+    """Predict infection status from wound ROI features.
+
+    The classifier is always run on **CPU** (tiny MLP). ``device`` is kept for API
+    compatibility with callers; YOLO/U-Net can stay on CUDA without mixing tensors here.
+    """
+    if not classifier_path.exists():
+        return {"infected_prob": -1.0, "predicted": "unknown"}
+
+    ckpt = torch.load(classifier_path, map_location="cpu", weights_only=False)
+    feats = extract_wound_features(image_rgb, wound_mask)
+    feats_t = torch.as_tensor(feats, dtype=torch.float32).unsqueeze(0)
+    feat_mean = torch.as_tensor(ckpt["feat_mean"], dtype=torch.float32)
+    feat_std = torch.as_tensor(ckpt["feat_std"], dtype=torch.float32)
+    feat_std = torch.clamp(feat_std, min=1e-8)
+    feats_norm = (feats_t - feat_mean) / feat_std
+
+    model = WoundInfectionClassifier(in_features=ckpt["in_features"])
+    model.load_state_dict(ckpt["model_state_dict"])
+    model.eval()
+    model.cpu()
+
+    with torch.no_grad():
+        logit = model(feats_norm)
+        prob = torch.sigmoid(logit).item()
+
+    return {
+        "infected_prob": prob,
+        "predicted": "infected" if prob > 0.5 else "non_infected",
+    }
 
 
 # ============================================================================
@@ -877,6 +1413,7 @@ def generate_report(
     combined_results: dict,
     config: dict,
     reports_dir: Path,
+    infection_results: Optional[dict] = None,
 ) -> Path:
     """Generate a markdown training report."""
     reports_dir.mkdir(parents=True, exist_ok=True)
@@ -935,6 +1472,19 @@ def generate_report(
         lines.append("| Metric | Value |")
         lines.append("|--------|-------|")
         for k, v in combined_results.items():
+            if isinstance(v, float):
+                lines.append(f"| {k} | {v:.4f} |")
+            elif isinstance(v, int):
+                lines.append(f"| {k} | {v} |")
+    else:
+        lines.append("*Not available.*\n")
+
+    lines.append("\n---\n")
+    lines.append("## Infection Classification Results\n")
+    if infection_results:
+        lines.append("| Metric | Value |")
+        lines.append("|--------|-------|")
+        for k, v in infection_results.items():
             if isinstance(v, float):
                 lines.append(f"| {k} | {v:.4f} |")
             elif isinstance(v, int):
@@ -1037,8 +1587,12 @@ def predict_single_image(
     }
 
     fname = Path(image_path).name.lower()
-    info["infection"] = "not_infected" if "-not-" in fname or "not_infected" in fname else "infected"
+    info["infection_filename"] = "not_infected" if "-not-" in fname or "not_infected" in fname else "infected"
     info["confidence"] = max(pred.get("scores", [0.0]))
+
+    classifier_path = Path(image_path).parent.parent / "checkpoints" / "infection" / "infection_classifier.pth"
+    if not classifier_path.exists():
+        classifier_path = SCRIPT_DIR / "checkpoints" / "infection" / "infection_classifier.pth"
 
     overlay = img_bgr.copy()
     combined_mask = np.zeros(img_bgr.shape[:2], dtype=np.uint8)
@@ -1057,12 +1611,27 @@ def predict_single_image(
         cv2.putText(overlay, f"{score:.2f}", (box[0], box[1] - 5),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
-    area_cm2 = calculate_wound_area(combined_mask, pixels_per_cm)
+    effective_ppcm = pred.get("pixels_per_cm") or pixels_per_cm
+    area_cm2 = calculate_wound_area(combined_mask, effective_ppcm)
     area_px = int(combined_mask.sum())
     info["wound_area_cm2"] = round(area_cm2, 2)
     info["wound_area_px"] = area_px
+    info["pixels_per_cm"] = effective_ppcm
+    info["marker_detected"] = pred.get("pixels_per_cm") is not None
 
-    cv2.putText(overlay, f"Area: {area_cm2:.1f} cm2 | {info['infection']}",
+    image_rgb_full = cv2.cvtColor(cv2.imread(str(image_path)), cv2.COLOR_BGR2RGB)
+    try:
+        inf_result = predict_infection(
+            image_rgb_full, combined_mask, classifier_path, device,
+        )
+    except Exception:
+        inf_result = {"infected_prob": -1.0, "predicted": "unknown"}
+    info["infection"] = inf_result["predicted"]
+    info["infection_prob"] = inf_result["infected_prob"]
+
+    marker_label = " [M]" if info["marker_detected"] else ""
+    inf_label = info["infection"] if inf_result["infected_prob"] >= 0 else info["infection_filename"]
+    cv2.putText(overlay, f"Area: {area_cm2:.1f} cm2{marker_label} | {inf_label}",
                 (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
     return overlay, info
@@ -1103,8 +1672,9 @@ def main(stage: str = "all") -> dict:
     config = load_config(config_path)
     set_seed(config.get("seed", 42))
 
-    results = {"yolo": {}, "unet": {}, "combined": {}}
-    stages = ["convert", "yolo", "unet", "combined"] if stage == "all" else [stage]
+    results = {"yolo": {}, "unet": {}, "combined": {}, "infection": {}}
+    stages = (["convert", "yolo", "unet", "combined", "infection"]
+              if stage == "all" else [stage])
 
     for s in stages:
         if s == "convert":
@@ -1126,6 +1696,9 @@ def main(stage: str = "all") -> dict:
         elif s == "combined":
             results["combined"] = evaluate_combined(config, SCRIPT_DIR)
 
+        elif s == "infection":
+            results["infection"] = train_infection_classifier(config, SCRIPT_DIR)
+
         else:
             print(f"[WARNING] Unknown stage: {s}")
 
@@ -1138,6 +1711,7 @@ def main(stage: str = "all") -> dict:
     generate_report(
         results["yolo"], results["unet"], results["combined"],
         config, SCRIPT_DIR / "reports",
+        infection_results=results.get("infection"),
     )
 
     print("\n" + "=" * 80)
@@ -1150,7 +1724,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="YOLO11m + U-Net++ Training")
     parser.add_argument(
         "--stage", type=str, default="all",
-        choices=["convert", "yolo", "unet", "combined", "all"],
+        choices=["convert", "yolo", "unet", "combined", "infection", "all"],
         help="Which stage to run",
     )
     args = parser.parse_args()

@@ -39,8 +39,19 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 WOUND_ONLY_CLASSES = ["wound"]
+WOUND_MARKER_CLASSES = ["wound", "marker"]
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
+
+
+def imread_bgr_ultralytics_safe(path: Path) -> Optional[np.ndarray]:
+    """Load BGR image without ``cv2.imread`` (Ultralytics monkey-patches ``cv2.imread`` globally)."""
+    try:
+        buf = path.read_bytes()
+    except OSError:
+        return None
+    arr = np.frombuffer(buf, dtype=np.uint8)
+    return cv2.imdecode(arr, cv2.IMREAD_COLOR)
 
 
 # ============================================================================
@@ -165,6 +176,9 @@ def create_dataset_yaml(
     val_json: Union[str, Path],
     test_json: Union[str, Path],
     class_names: Optional[List[str]] = None,
+    train_images_root: Optional[Union[str, Path]] = None,
+    val_images_root: Optional[Union[str, Path]] = None,
+    test_images_root: Optional[Union[str, Path]] = None,
 ) -> Path:
     """
     Generate a YOLO dataset.yaml and per-split image list files.
@@ -172,14 +186,23 @@ def create_dataset_yaml(
     Ultralytics expects paths in dataset.yaml to point to directories or
     text files listing image paths.  We write ``train.txt``, ``val.txt``,
     ``test.txt`` alongside the yaml.
+
+    When training uses offline-augmented images in a different folder than
+    val/test (e.g. ``data_root_train``), pass ``train_images_root`` while
+    ``val_images_root`` / ``test_images_root`` default to ``images_root``.
     """
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    images_root = Path(images_root).resolve()
+    base_root = Path(images_root).resolve()
+    roots = {
+        "train": Path(train_images_root).resolve() if train_images_root is not None else base_root,
+        "val": Path(val_images_root).resolve() if val_images_root is not None else base_root,
+        "test": Path(test_images_root).resolve() if test_images_root is not None else base_root,
+    }
 
     list_dir = output_path.parent
     for split, json_path in [("train", train_json), ("val", val_json), ("test", test_json)]:
-        paths = _create_image_list(json_path, images_root)
+        paths = _create_image_list(json_path, roots[split])
         list_file = list_dir / f"{split}.txt"
         with open(list_file, "w", encoding="utf-8") as f:
             f.write("\n".join(paths))
@@ -212,31 +235,46 @@ def prepare_yolo_dataset(
     which resolves labels by replacing the ``images`` path segment with
     ``labels`` (see ``ultralytics.data.utils.img2label_paths``).  Writing labels
     under ``yolo_data/labels/train`` breaks training (no labels found, zero mAP).
+
+    The class list is read from ``config["classes"]``.  Defaults to
+    ``WOUND_ONLY_CLASSES`` (single-class).  Set to ``["wound", "marker"]``
+    in config.yaml to enable marker detection and dynamic calibration.
     """
     project_root = script_dir.parent.parent
     data_root = (project_root / config["data_root"]).resolve()
-    images_root = data_root
-    # Must mirror .../images/name.jpg -> .../labels/name.txt for Ultralytics
-    labels_dir = data_root / "labels"
-    labels_dir.mkdir(parents=True, exist_ok=True)
+    data_root_train = (project_root / config.get("data_root_train", config["data_root"])).resolve()
+
+    class_names = config.get("classes", WOUND_ONLY_CLASSES)
 
     yolo_data_dir = script_dir / "yolo_data"
 
+    # Train labels live next to augmented images; val/test next to main data_root
+    split_roots = {
+        "train": data_root_train,
+        "val": data_root,
+        "test": data_root,
+    }
     for split, ann_key in [("train", "ann_train"), ("val", "ann_val"), ("test", "ann_test")]:
         ann_path = (project_root / config[ann_key]).resolve()
+        root_for_split = split_roots[split]
+        labels_dir = root_for_split / "labels"
+        labels_dir.mkdir(parents=True, exist_ok=True)
         print(f"  Converting {split} ({ann_path.name}) ...")
-        n = coco_to_yolo_seg(ann_path, labels_dir, images_root, class_names=WOUND_ONLY_CLASSES)
+        n = coco_to_yolo_seg(ann_path, labels_dir, root_for_split, class_names=class_names)
         print(f"    -> {n} label files written to {labels_dir}")
 
     dataset_yaml = yolo_data_dir / "dataset.yaml"
     create_dataset_yaml(
         output_path=dataset_yaml,
-        images_root=images_root,
-        labels_root=labels_dir,
+        images_root=data_root,
+        labels_root=data_root / "labels",
         train_json=(project_root / config["ann_train"]).resolve(),
         val_json=(project_root / config["ann_val"]).resolve(),
         test_json=(project_root / config["ann_test"]).resolve(),
-        class_names=WOUND_ONLY_CLASSES,
+        class_names=class_names,
+        train_images_root=data_root_train,
+        val_images_root=data_root,
+        test_images_root=data_root,
     )
     return dataset_yaml
 
@@ -332,6 +370,22 @@ class WoundROIDataset(Dataset):
     def __len__(self) -> int:
         return len(self.samples)
 
+    def _resolve_image_path(self, file_name: str) -> Path:
+        """Resolve COCO ``file_name`` under ``self.root``.
+
+        Offline-augmented JSON stores paths like ``images/foo_aug1.jpg`` relative
+        to ``data/wound_focus_clean/augmented``. If ``data_root_train`` was
+        omitted from config, ``root`` may be the parent ``wound_focus_clean``;
+        then the file actually lives under ``root/augmented/...``.
+        """
+        p = self.root / file_name
+        if p.is_file():
+            return p
+        alt = self.root / "augmented" / file_name
+        if alt.is_file():
+            return alt
+        return p
+
     def _expand_bbox(self, bbox: List[float], img_w: int, img_h: int) -> Tuple[int, int, int, int]:
         """Expand COCO bbox [x, y, w, h] by roi_padding and clamp to image."""
         x, y, w, h = bbox
@@ -346,9 +400,18 @@ class WoundROIDataset(Dataset):
     def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor]:
         img_id, ann = self.samples[index]
         img_info = self.images[img_id]
-        img_path = self.root / img_info["file_name"]
+        img_path = self._resolve_image_path(img_info["file_name"])
+        if not img_path.is_file():
+            raise FileNotFoundError(
+                f"U-Net ROI image not found: {img_path}\n"
+                f"  root={self.root}\n"
+                f"  file_name={img_info['file_name']}\n"
+                "  Fix: set `data_root_train: \"data/wound_focus_clean/augmented\"` in "
+                "config.yaml when using `train_augmented.json`, and ensure "
+                "`augment_offline.py` was run so images exist under augmented/images/."
+            )
 
-        image = cv2.imread(str(img_path))
+        image = imread_bgr_ultralytics_safe(img_path)
         if image is None:
             h = img_info.get("height", 256)
             w = img_info.get("width", 256)
@@ -402,15 +465,28 @@ def get_unet_transforms(
     train: bool = True,
     image_size: Tuple[int, int] = (256, 256),
 ) -> A.Compose:
-    """Albumentations pipeline for U-Net++ ROI crops."""
+    """Albumentations pipeline for U-Net++ ROI crops.
+
+    Training pipeline includes medically-safe geometric and photometric
+    augmentations: shift-scale-rotate, CLAHE, color jitter, and light
+    elastic transform (kept mild to preserve wound geometry).
+    """
     if train:
         return A.Compose([
             A.Resize(height=image_size[0], width=image_size[1]),
             A.HorizontalFlip(p=0.5),
             A.VerticalFlip(p=0.5),
             A.RandomRotate90(p=0.5),
+            A.ShiftScaleRotate(
+                shift_limit=0.1, scale_limit=0.15, rotate_limit=15,
+                border_mode=cv2.BORDER_REFLECT_101, p=0.5,
+            ),
             A.RandomBrightnessContrast(brightness_limit=0.2, contrast_limit=0.2, p=0.3),
+            A.CLAHE(clip_limit=2.0, tile_grid_size=(8, 8), p=0.3),
+            A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.1, hue=0.05, p=0.3),
             A.GaussNoise(p=0.2),
+            A.GaussianBlur(blur_limit=(3, 5), p=0.15),
+            A.ElasticTransform(alpha=50, sigma=10, p=0.1),
             A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
             ToTensorV2(),
         ])
@@ -429,12 +505,24 @@ def create_unet_datasets(
     """Build train / val / test WoundROIDataset instances."""
     project_root = script_dir.parent.parent
     data_root = (project_root / config["data_root"]).resolve()
+    data_root_train = (project_root / config.get("data_root_train", config["data_root"])).resolve()
     unet_cfg = config["unet"]
     image_size = tuple(unet_cfg["input_size"])
     roi_padding = unet_cfg.get("roi_padding", 0.1)
 
+    print(f"  U-Net train root: {data_root_train}")
+    print(f"  U-Net train ann:  {config['ann_train']}")
+    if data_root_train.resolve() == data_root.resolve() and "augmented" in str(
+        config.get("ann_train", "")
+    ):
+        print(
+            "  [WARNING] data_root_train equals data_root but ann_train references "
+            "augmented data — set data_root_train to data/wound_focus_clean/augmented "
+            "or images will be looked up under the wrong folder.",
+        )
+
     train_ds = WoundROIDataset(
-        root=data_root,
+        root=data_root_train,
         annotation_file=str((project_root / config["ann_train"]).resolve()),
         transforms=get_unet_transforms(train=True, image_size=image_size),
         roi_padding=roi_padding,
@@ -537,7 +625,7 @@ class WoundDataset(Dataset):
         img_info = self.images[img_id]
         img_path = self.root / img_info["file_name"]
 
-        image = cv2.imread(str(img_path))
+        image = imread_bgr_ultralytics_safe(img_path)
         if image is None:
             image = np.zeros((self.image_size[0], self.image_size[1], 3), dtype=np.uint8)
         else:

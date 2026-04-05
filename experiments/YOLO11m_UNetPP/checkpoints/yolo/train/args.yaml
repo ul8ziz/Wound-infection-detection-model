@@ -5,8 +5,8 @@ data: E:\GitHub\Wound-infection-detection-model\experiments\YOLO11m_UNetPP\yolo_
 epochs: 100
 time: null
 patience: 20
-batch: 8
-imgsz: 640
+batch: 4
+imgsz: 1024
 save: true
 save_period: -1
 cache: false
@@ -23,7 +23,7 @@ deterministic: true
 single_cls: false
 rect: false
 cos_lr: false
-close_mosaic: 10
+close_mosaic: 15
 resume: false
 amp: true
 fraction: 1.0
@@ -97,8 +97,8 @@ perspective: 0.0
 flipud: 0.5
 fliplr: 0.5
 bgr: 0.0
-mosaic: 1.0
-mixup: 0.1
+mosaic: 0.5
+mixup: 0.0
 cutmix: 0.0
 copy_paste: 0.0
 copy_paste_mode: flip
