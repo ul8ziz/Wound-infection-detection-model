@@ -1,0 +1,27 @@
+---
+description: Keep experiments/YOLO11m_UNetPP/training_pipeline.ipynb in sync as the main training entry for the YOLO+U-Net++ experiment.
+alwaysApply: true
+---
+
+# YOLO11m_UNetPP — main training notebook (`training_pipeline.ipynb`)
+
+**Canonical training entry:** `experiments/YOLO11m_UNetPP/training_pipeline.ipynb`
+
+This notebook loads `config.yaml` and calls `train_model.py` APIs from the kernel. It is the **primary** place the user runs full YOLO + U-Net++ training and combined evaluation.
+
+## Agent obligations
+
+Whenever you change anything that affects **training, evaluation, or combined-pipeline behavior** under `experiments/YOLO11m_UNetPP/`, you **must** apply the same intent to `training_pipeline.ipynb`, not only to scripts:
+
+| Change type | Also update the notebook |
+|-------------|-------------------------|
+| `config.yaml` (yolo / unet / **combined**) | Refresh markdown that documents locked values; ensure §1 code still prints `CONFIG`; clear stale cell outputs if they show old parameters |
+| `train_model.py` public training/eval API used by the notebook | Adjust imports or cell calls if signatures change |
+| `combined/*` inference, metrics, or tuning defaults | Document in the combined-pipeline markdown cell; add prints if needed for parity with CLI |
+| New training stages or evaluation steps | Add or update the corresponding notebook section (§4–§6) |
+
+Do **not** leave `training_pipeline.ipynb` with **misleading saved outputs** (e.g. old `combined` hyperparameters) after you change `config.yaml`.
+
+## Note (Arabic)
+
+**الدفتر `training_pipeline.ipynb` هو الملف الرئيسي للتدريب في تجربة YOLO11m+U-Net++:** أي تعديل على الإعدادات أو مسار التدريب/التقييم في هذا المجلد يجب أن ينعكس على الدفتر (توثيق، خلايا، أو مسح مخرجات قديمة).

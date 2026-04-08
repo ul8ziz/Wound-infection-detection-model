@@ -1,6 +1,6 @@
 # YOLO11m + U-Net++ Training Report
 
-Generated: 2026-04-05 20:35:18
+Generated: 2026-04-08 22:27:07
 
 ---
 
@@ -60,9 +60,22 @@ Generated: 2026-04-05 20:35:18
 
 | Parameter | Value |
 |-----------|-------|
-| yolo_conf_thresh | 0.25 |
-| unet_mask_thresh | 0.5 |
+| yolo_conf_thresh | 0.15 |
+| yolo_min_conf_inference | 0.001 |
+| unet_mask_thresh | 0.25 |
 | roi_padding | 0.1 |
+| mask_upscale | linear_probs |
+| bbox_selection_strategy | all_above_thresh |
+| merge_iou_thresh | 0.5 |
+| coco_bbox_mode | yolo_xyxy |
+| min_mask_area | 100 |
+| postprocess_preset | none |
+| postprocess | [] |
+| enable_tta | True |
+| debug_save_intermediates | False |
+| debug_output_dir | results/combined/debug |
+| debug_max_images | 16 |
+| balanced_score_weights | {'bbox_AP50': 0.25, 'segm_AP50': 0.2, 'combined_AP50': 0.2, 'bbox_AP75': 0.15, 'segm_AP75': 0.15, 'mean_dice': 0.05} |
 | pixels_per_cm | 26.0 |
 | marker_real_cm | 3.0 |
 | num_qualitative_samples | 8 |
@@ -72,52 +85,15 @@ Generated: 2026-04-05 20:35:18
 
 ## YOLO11m-seg Results
 
-| Metric | Value |
-|--------|-------|
-| epoch | 56.0000 |
-| time | 8043.9600 |
-| train/box_loss | 1.2005 |
-| train/seg_loss | 2.4889 |
-| train/cls_loss | 0.7703 |
-| train/dfl_loss | 1.2847 |
-| train/sem_loss | 0.0000 |
-| metrics/precision(B) | 0.8279 |
-| metrics/recall(B) | 0.8118 |
-| metrics/mAP50(B) | 0.8237 |
-| metrics/mAP50-95(B) | 0.4912 |
-| metrics/precision(M) | 0.7536 |
-| metrics/recall(M) | 0.6353 |
-| metrics/mAP50(M) | 0.6407 |
-| metrics/mAP50-95(M) | 0.2289 |
-| val/box_loss | 1.3983 |
-| val/seg_loss | 2.8013 |
-| val/cls_loss | 0.9343 |
-| val/dfl_loss | 1.4564 |
-| val/sem_loss | 0.0000 |
-| lr/pg0 | 0.0046 |
-| lr/pg1 | 0.0046 |
-| lr/pg2 | 0.0046 |
-| training_completed | True |
-| bbox_mAP50 | 0.7858 |
-| bbox_mAP50_95 | 0.4726 |
-| segm_mAP50 | 0.6772 |
-| segm_mAP50_95 | 0.2365 |
-| combined_AP50 | 0.7315 |
+*Not available — YOLO was not trained or evaluated.*
+
 
 ---
 
 ## U-Net++ Results
 
-- **Best Dice (val):** 0.7676 at epoch 10
-- **Training time:** 734s
+*Not available.*
 
-### Test Metrics
-
-| Metric | Value |
-|--------|-------|
-| dice | 0.7817 |
-| iou | 0.6552 |
-| pixel_accuracy | 0.8775 |
 
 ---
 
@@ -125,17 +101,21 @@ Generated: 2026-04-05 20:35:18
 
 | Metric | Value |
 |--------|-------|
-| mean_dice | 0.7076 |
-| mean_iou | 0.5780 |
-| n_images_evaluated | 51 |
+| mean_dice | 0.6494 |
+| mean_iou | 0.5271 |
+| mean_dice_conditional | 0.6868 |
+| mean_iou_conditional | 0.5575 |
+| n_images_total | 55 |
+| n_images_evaluated | 52 |
+| n_images_missed | 3 |
 | n_predictions_saved | 8 |
-| coco_bbox_AP | 0.1707 |
-| coco_bbox_AP50 | 0.5981 |
-| coco_bbox_AP75 | 0.0124 |
-| coco_segm_AP | 0.1888 |
-| coco_segm_AP50 | 0.5794 |
-| coco_segm_AP75 | 0.0422 |
-| coco_combined_AP50 | 0.5888 |
+| coco_bbox_AP | 0.4301 |
+| coco_bbox_AP50 | 0.7333 |
+| coco_bbox_AP75 | 0.4567 |
+| coco_segm_AP | 0.1744 |
+| coco_segm_AP50 | 0.5279 |
+| coco_segm_AP75 | 0.0578 |
+| coco_combined_AP50 | 0.6306 |
 
 ---
 

@@ -13,19 +13,23 @@ from typing import Any, Dict, List, Optional
 
 @dataclass
 class BalancedScoreWeights:
-    """Weights for tuning balanced_score (must sum to 1.0 for interpretability)."""
+    """Weights for tuning balanced_score (should sum to 1.0 for interpretability)."""
 
-    bbox_AP50: float = 0.35
-    segm_AP50: float = 0.35
+    bbox_AP50: float = 0.25
+    segm_AP50: float = 0.20
+    combined_AP50: float = 0.20
     bbox_AP75: float = 0.15
     segm_AP75: float = 0.15
+    mean_dice: float = 0.05
 
     def as_tuple(self) -> tuple:
         return (
             self.bbox_AP50,
             self.segm_AP50,
+            self.combined_AP50,
             self.bbox_AP75,
             self.segm_AP75,
+            self.mean_dice,
         )
 
 
@@ -77,6 +81,7 @@ class CombinedInferenceConfig:
     debug_max_images: int = 16
 
     balanced_score_weights: BalancedScoreWeights = field(default_factory=BalancedScoreWeights)
+    """Seven-term balanced score: bbox_AP50, segm_AP50, combined_AP50, bbox_AP75, segm_AP75, mean_dice."""
 
     # passthrough for area calibration (unchanged)
     marker_real_cm: float = 3.0
@@ -90,8 +95,10 @@ class CombinedInferenceConfig:
                 d[f.name] = {
                     "bbox_AP50": v.bbox_AP50,
                     "segm_AP50": v.segm_AP50,
+                    "combined_AP50": v.combined_AP50,
                     "bbox_AP75": v.bbox_AP75,
                     "segm_AP75": v.segm_AP75,
+                    "mean_dice": v.mean_dice,
                 }
             else:
                 d[f.name] = v
@@ -112,10 +119,12 @@ def combined_config_from_dict(config: Dict[str, Any]) -> CombinedInferenceConfig
     c = config.get("combined") or {}
     bw = c.get("balanced_score_weights") or {}
     weights = BalancedScoreWeights(
-        bbox_AP50=float(bw.get("bbox_AP50", 0.35)),
-        segm_AP50=float(bw.get("segm_AP50", 0.35)),
+        bbox_AP50=float(bw.get("bbox_AP50", 0.25)),
+        segm_AP50=float(bw.get("segm_AP50", 0.20)),
+        combined_AP50=float(bw.get("combined_AP50", 0.20)),
         bbox_AP75=float(bw.get("bbox_AP75", 0.15)),
         segm_AP75=float(bw.get("segm_AP75", 0.15)),
+        mean_dice=float(bw.get("mean_dice", 0.05)),
     )
     postprocess = c.get("postprocess")
     if postprocess is None:

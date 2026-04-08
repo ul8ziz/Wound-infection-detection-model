@@ -21,8 +21,13 @@ def _build_coco_results(
     config: dict,
     cfg: CombinedInferenceConfig,
     img_ids: Optional[List[int]] = None,
+    yolo_cache: Optional[Dict[str, Any]] = None,
 ) -> tuple:
-    """Returns (bbox_results, segm_results) lists for COCOeval."""
+    """Returns (bbox_results, segm_results) lists for COCOeval.
+
+    *yolo_cache*: if provided, maps image_path -> YOLO result object to skip
+    redundant YOLO forward passes during grid search.
+    """
     try:
         from pycocotools import mask as mask_utils
     except ImportError:
@@ -38,6 +43,7 @@ def _build_coco_results(
         if not Path(img_path).exists():
             continue
 
+        yr = yolo_cache.get(img_path) if yolo_cache else None
         pred = combined_inference(
             yolo_model,
             unet_model,
@@ -45,6 +51,7 @@ def _build_coco_results(
             device,
             config,
             cfg=cfg,
+            yolo_result=yr,
         )
         if "error" in pred or not pred.get("masks"):
             continue
@@ -85,6 +92,7 @@ def evaluate_combined_coco(
     cfg: Optional[CombinedInferenceConfig] = None,
     ann_key: str = "ann_test",
     write_json: bool = True,
+    yolo_cache: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, float]:
     """COCO AP for combined pipeline; bbox geometry follows ``cfg.coco_bbox_mode`` via inference."""
     try:
@@ -101,7 +109,6 @@ def evaluate_combined_coco(
     data_root = (project_root / config["data_root"]).resolve()
 
     coco_gt = CocoAPI(ann_path)
-    # Minimal fields some exports omit but pycocotools.loadRes expects
     if "info" not in coco_gt.dataset:
         coco_gt.dataset["info"] = {}
     if "licenses" not in coco_gt.dataset:
@@ -115,6 +122,7 @@ def evaluate_combined_coco(
         device,
         config,
         cfg,
+        yolo_cache=yolo_cache,
     )
 
     metrics: Dict[str, float] = {}
@@ -154,8 +162,13 @@ def pixel_metrics_on_split(
     device,
     cfg: Optional[CombinedInferenceConfig] = None,
     ann_key: str = "ann_val",
+    yolo_cache: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, float]:
-    """Mean Dice / IoU (pixel-level merge) on a COCO split."""
+    """Mean Dice / IoU (pixel-level merge) on a COCO split.
+
+    Returns both *conditional* metrics (only images with predictions) and
+    *full-split* metrics (missed images count as Dice=0, IoU=0).
+    """
     cfg = cfg or combined_config_from_dict(config)
     project_root = script_dir.parent.parent
     ann_path = (project_root / config[ann_key]).resolve()
@@ -175,17 +188,21 @@ def pixel_metrics_on_split(
 
     dice_scores: List[float] = []
     iou_scores: List[float] = []
+    n_total = 0
+    n_missed = 0
 
     for img_id, img_info in img_lookup.items():
         img_path = str(data_root / img_info["file_name"])
         if not Path(img_path).exists():
             continue
+        n_total += 1
 
+        yr = yolo_cache.get(img_path) if yolo_cache else None
         pred = combined_inference(
             yolo_model, unet_model, img_path, device, config, cfg=cfg,
+            yolo_result=yr,
         )
-        if "error" in pred or not pred.get("masks"):
-            continue
+        has_pred = not ("error" in pred) and bool(pred.get("masks"))
 
         orig_h, orig_w = img_info["height"], img_info["width"]
         gt_mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
@@ -195,6 +212,12 @@ def pixel_metrics_on_split(
                     continue
                 poly = np.array(seg, dtype=np.float32).reshape(-1, 2).astype(np.int32)
                 cv2.fillPoly(gt_mask, [poly], 1)
+
+        if not has_pred:
+            n_missed += 1
+            dice_scores.append(0.0)
+            iou_scores.append(0.0)
+            continue
 
         combined_mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
         for m in pred["masks"]:
@@ -211,30 +234,51 @@ def pixel_metrics_on_split(
         dice_scores.append(float(dice))
         iou_scores.append(float(iou))
 
-    n = max(1, len(dice_scores))
+    n_full = max(1, len(dice_scores))
+    n_detected = n_full - n_missed
+    cond_n = max(1, n_detected)
+
+    full_dice = sum(dice_scores) / n_full
+    full_iou = sum(iou_scores) / n_full
+    cond_dice = (sum(dice_scores) - 0.0 * n_missed) / cond_n
+    cond_iou = (sum(iou_scores) - 0.0 * n_missed) / cond_n
+
     return {
-        "mean_dice": sum(dice_scores) / n,
-        "mean_iou": sum(iou_scores) / n,
-        "n_images_evaluated": len(dice_scores),
+        "mean_dice": full_dice,
+        "mean_iou": full_iou,
+        "mean_dice_conditional": cond_dice,
+        "mean_iou_conditional": cond_iou,
+        "n_images_total": n_total,
+        "n_images_evaluated": n_detected,
+        "n_images_missed": n_missed,
     }
 
 
 def balanced_score(metrics: Dict[str, float], weights: Optional[Any] = None) -> float:
-    """Configurable blend of AP50/AP75 (expects coco_* keys)."""
+    """Seven-term configurable blend: bbox/segm AP50/AP75, combined_AP50, mean_dice."""
     from .config import BalancedScoreWeights
 
     w = weights or BalancedScoreWeights()
     if isinstance(w, BalancedScoreWeights):
-        bb50, sg50, bb75, sg75 = w.bbox_AP50, w.segm_AP50, w.bbox_AP75, w.segm_AP75
+        bb50 = w.bbox_AP50
+        sg50 = w.segm_AP50
+        c50 = w.combined_AP50
+        bb75 = w.bbox_AP75
+        sg75 = w.segm_AP75
+        md = w.mean_dice
     else:
-        bb50 = float(w.get("bbox_AP50", 0.35))
-        sg50 = float(w.get("segm_AP50", 0.35))
+        bb50 = float(w.get("bbox_AP50", 0.25))
+        sg50 = float(w.get("segm_AP50", 0.20))
+        c50 = float(w.get("combined_AP50", 0.20))
         bb75 = float(w.get("bbox_AP75", 0.15))
         sg75 = float(w.get("segm_AP75", 0.15))
+        md = float(w.get("mean_dice", 0.05))
 
     return (
         bb50 * metrics.get("coco_bbox_AP50", 0.0)
         + sg50 * metrics.get("coco_segm_AP50", 0.0)
+        + c50 * metrics.get("coco_combined_AP50", 0.0)
         + bb75 * metrics.get("coco_bbox_AP75", 0.0)
         + sg75 * metrics.get("coco_segm_AP75", 0.0)
+        + md * metrics.get("mean_dice", 0.0)
     )

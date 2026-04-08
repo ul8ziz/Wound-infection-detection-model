@@ -89,6 +89,24 @@ PRESETS: Dict[str, List[Dict[str, Any]]] = {
         {"type": "binary_close", "kernel": 3},
         {"type": "fill_holes"},
     ],
+    "keep_largest_component": [{"type": "keep_largest"}],
+    "opening_then_closing": [
+        {"type": "binary_open", "kernel": 3},
+        {"type": "binary_close", "kernel": 5},
+    ],
+    "closing_then_fill": [
+        {"type": "binary_close", "kernel": 5},
+        {"type": "fill_holes"},
+    ],
+    "largest_then_fill": [
+        {"type": "keep_largest"},
+        {"type": "fill_holes"},
+    ],
+    "largest_close_fill": [
+        {"type": "keep_largest"},
+        {"type": "binary_close", "kernel": 5},
+        {"type": "fill_holes"},
+    ],
 }
 
 

@@ -766,16 +766,17 @@ def evaluate_combined(config: dict, script_dir: Path) -> dict:
     num_qual = combined_cfg.get("num_qualitative_samples", 8)
     saved_count = 0
 
+    n_total = 0
+    n_missed = 0
     for img_id, img_info in img_lookup.items():
         img_path = str(data_root / img_info["file_name"])
         if not Path(img_path).exists():
             continue
+        n_total += 1
 
         pred = combined_inference(yolo_model, unet_model, img_path, device, config)
-        if "error" in pred or not pred["masks"]:
-            continue
+        has_pred = not ("error" in pred) and bool(pred.get("masks"))
 
-        # GT mask
         orig_h, orig_w = img_info["height"], img_info["width"]
         gt_mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
         for ann in img_anns.get(img_id, []):
@@ -785,13 +786,17 @@ def evaluate_combined(config: dict, script_dir: Path) -> dict:
                 poly = np.array(seg, dtype=np.float32).reshape(-1, 2).astype(np.int32)
                 cv2.fillPoly(gt_mask, [poly], 1)
 
-        # Combine all predicted masks
+        if not has_pred:
+            n_missed += 1
+            dice_scores.append(0.0)
+            iou_scores.append(0.0)
+            continue
+
         combined_mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
         for m in pred["masks"]:
             if m.shape == (orig_h, orig_w):
                 combined_mask = np.maximum(combined_mask, m)
 
-        # Metrics
         smooth = 1e-6
         p_flat = combined_mask.flatten().astype(float)
         t_flat = gt_mask.flatten().astype(float)
@@ -811,13 +816,12 @@ def evaluate_combined(config: dict, script_dir: Path) -> dict:
             "marker_detected": pred.get("pixels_per_cm") is not None,
         })
 
-        # Save qualitative prediction
         if saved_count < num_qual:
             img_bgr = cv2.imread(img_path)
             if img_bgr is not None:
                 overlay = img_bgr.copy()
                 mask_color = np.zeros_like(img_bgr)
-                mask_color[:, :, 1] = 255  # green
+                mask_color[:, :, 1] = 255
                 overlay[combined_mask > 0] = cv2.addWeighted(
                     overlay, 0.5, mask_color, 0.5, 0
                 )[combined_mask > 0]
@@ -834,11 +838,17 @@ def evaluate_combined(config: dict, script_dir: Path) -> dict:
                 cv2.imwrite(str(out), overlay)
                 saved_count += 1
 
-    n = max(1, len(dice_scores))
+    n_full = max(1, len(dice_scores))
+    n_detected = n_full - n_missed
+    cond_n = max(1, n_detected)
     metrics = {
-        "mean_dice": sum(dice_scores) / n,
-        "mean_iou": sum(iou_scores) / n,
-        "n_images_evaluated": len(dice_scores),
+        "mean_dice": sum(dice_scores) / n_full,
+        "mean_iou": sum(iou_scores) / n_full,
+        "mean_dice_conditional": sum(dice_scores) / cond_n,
+        "mean_iou_conditional": sum(iou_scores) / cond_n,
+        "n_images_total": n_total,
+        "n_images_evaluated": n_detected,
+        "n_images_missed": n_missed,
         "n_predictions_saved": saved_count,
     }
 

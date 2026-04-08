@@ -129,7 +129,13 @@ def _select_wound_indices(
     conf_thresh: float,
     wound_class_id: int,
     strategy: str,
+    img_hw: Optional[Tuple[int, int]] = None,
 ) -> List[int]:
+    """Return wound box indices according to *strategy*.
+
+    Single-box strategies return a list with at most one index.
+    Multi-box strategies return all valid indices (sorted).
+    """
     idxs: List[int] = []
     for i in range(len(boxes_xyxy)):
         if int(classes[i]) != wound_class_id:
@@ -141,15 +147,41 @@ def _select_wound_indices(
     if not idxs:
         return []
 
-    if strategy == "largest_area":
-        idxs.sort(
-            key=lambda i: -(
-                (boxes_xyxy[i, 2] - boxes_xyxy[i, 0])
-                * (boxes_xyxy[i, 3] - boxes_xyxy[i, 1])
-            ),
+    def _area(i: int) -> float:
+        return float(
+            (boxes_xyxy[i, 2] - boxes_xyxy[i, 0])
+            * (boxes_xyxy[i, 3] - boxes_xyxy[i, 1])
         )
-    else:
+
+    if strategy == "highest_conf_single":
+        return [max(idxs, key=lambda i: scores[i])]
+
+    if strategy == "largest_area_single":
+        return [max(idxs, key=_area)]
+
+    if strategy == "confidence_times_area":
+        return [max(idxs, key=lambda i: float(scores[i]) * _area(i))]
+
+    if strategy == "closest_to_center":
+        if img_hw is None:
+            return [max(idxs, key=lambda i: scores[i])]
+        ih, iw = img_hw
+        cx_img, cy_img = iw / 2.0, ih / 2.0
+        def _dist(i: int) -> float:
+            bx = (boxes_xyxy[i, 0] + boxes_xyxy[i, 2]) / 2.0
+            by = (boxes_xyxy[i, 1] + boxes_xyxy[i, 3]) / 2.0
+            return (bx - cx_img) ** 2 + (by - cy_img) ** 2
+        return [min(idxs, key=_dist)]
+
+    if strategy == "largest_area":
+        idxs.sort(key=lambda i: -_area(i))
+        return idxs
+
+    if strategy == "all_above_thresh":
         idxs.sort(key=lambda i: -scores[i])
+        return idxs
+
+    idxs.sort(key=lambda i: -scores[i])
     return idxs
 
 
@@ -276,6 +308,7 @@ def combined_inference(
         cfg.yolo_conf_thresh,
         wound_class_id,
         cfg.bbox_selection_strategy,
+        img_hw=(img_h, img_w),
     )
 
     if not indices:
