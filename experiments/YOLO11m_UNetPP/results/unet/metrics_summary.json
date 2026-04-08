@@ -1,11 +1,11 @@
 {
-  "best_dice": 0.7675642116996443,
-  "best_epoch": 10,
-  "training_time_s": 733.7565448284149,
+  "best_dice": 0.7743487233494298,
+  "best_epoch": 17,
+  "training_time_s": 882.8511304855347,
   "test_metrics": {
-    "dice": 0.7817099463970794,
-    "iou": 0.6552392034876563,
-    "pixel_accuracy": 0.8775045034047719,
+    "dice": 0.7795780171973395,
+    "iou": 0.6535469874310806,
+    "pixel_accuracy": 0.8818734658730997,
     "n_samples": 74
   },
   "config": {

@@ -75,10 +75,26 @@ def get_device(prefer_cuda: bool = True) -> torch.device:
     return torch.device("cpu")
 
 
-def load_config(config_path: Union[str, Path]) -> dict:
-    """Load YAML config file."""
+def load_config(
+    config_path: Union[str, Path],
+    *,
+    validate_combined: bool = False,
+) -> dict:
+    """Load YAML config file.
+
+    If ``validate_combined`` is True, parses ``combined:`` via
+    ``CombinedInferenceConfig`` (same keys as ``config.yaml``) to catch
+    typos early. Requires importing from ``combined`` (experiment cwd on path).
+    """
     with open(config_path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        data = yaml.safe_load(f)
+    if validate_combined and data is not None:
+        try:
+            from combined.config import combined_config_from_dict
+            combined_config_from_dict(data)
+        except Exception as e:
+            raise ValueError(f"Invalid combined inference config: {e}") from e
+    return data
 
 
 # ============================================================================

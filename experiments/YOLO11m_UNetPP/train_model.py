@@ -67,6 +67,10 @@ from pipeline_utils import (
     WOUND_ONLY_CLASSES,
 )
 
+from combined.inference import combined_inference
+from combined.marker import calculate_pixels_per_cm_from_marker
+from combined.coco_eval import evaluate_combined_coco
+
 # Fix Windows console encoding
 if sys.platform == "win32":
     try:
@@ -698,196 +702,7 @@ def save_unet_training_curves(history: dict, results_dir: Path) -> None:
 # ============================================================================
 # Stage 3: Combined Pipeline
 # ============================================================================
-
-def _unet_predict_with_tta(
-    unet_model: nn.Module,
-    crop_tensor: torch.Tensor,
-    mask_thresh: float,
-    enable_tta: bool = True,
-) -> np.ndarray:
-    """
-    Run U-Net++ prediction with optional test-time augmentation.
-
-    Averages sigmoid probabilities from the original and horizontally-flipped
-    crop before thresholding, improving boundary precision without retraining.
-    """
-    pred = torch.sigmoid(unet_model(crop_tensor))
-
-    if enable_tta:
-        flipped = torch.flip(crop_tensor, dims=[-1])
-        pred_flip = torch.sigmoid(unet_model(flipped))
-        pred_flip = torch.flip(pred_flip, dims=[-1])
-        pred = (pred + pred_flip) * 0.5
-
-    return (pred > mask_thresh).squeeze().cpu().numpy().astype(np.uint8)
-
-
-def _mask_nms(
-    masks: List[np.ndarray],
-    boxes: List[List[int]],
-    scores: List[float],
-    iou_thresh: float = 0.5,
-) -> Tuple[List[np.ndarray], List[List[int]], List[float]]:
-    """IoU-based NMS on refined masks to remove duplicate detections."""
-    if len(masks) <= 1:
-        return masks, boxes, scores
-
-    order = np.argsort(scores)[::-1]
-    keep_masks, keep_boxes, keep_scores = [], [], []
-
-    while len(order) > 0:
-        idx = order[0]
-        keep_masks.append(masks[idx])
-        keep_boxes.append(boxes[idx])
-        keep_scores.append(scores[idx])
-
-        if len(order) == 1:
-            break
-
-        remaining = []
-        m_i = masks[idx].astype(float)
-        area_i = m_i.sum()
-        for j in order[1:]:
-            m_j = masks[j].astype(float)
-            inter = (m_i * m_j).sum()
-            area_j = m_j.sum()
-            iou = inter / max(area_i + area_j - inter, 1e-6)
-            if iou < iou_thresh:
-                remaining.append(j)
-        order = np.array(remaining, dtype=int)
-
-    return keep_masks, keep_boxes, keep_scores
-
-
-@torch.no_grad()
-def combined_inference(
-    yolo_model,
-    unet_model: nn.Module,
-    image_path: str,
-    device: torch.device,
-    config: dict,
-    enable_tta: bool = True,
-) -> Dict:
-    """
-    Two-stage inference on a single image.
-
-    1. YOLO11m-seg detects wound bboxes + coarse masks
-    2. For each detection, crop ROI and run U-Net++ for refined mask (with TTA)
-    3. Apply mask-level NMS to remove duplicate detections
-    4. Map refined masks back to full image coordinates
-
-    Returns dict with boxes, masks, scores, wound area info.
-    """
-    combined_cfg = config.get("combined", {})
-    conf_thresh = combined_cfg.get("yolo_conf_thresh", 0.25)
-    mask_thresh = combined_cfg.get("unet_mask_thresh", 0.5)
-    roi_padding = combined_cfg.get("roi_padding", 0.1)
-    unet_size = tuple(config["unet"].get("input_size", [256, 256]))
-
-    image_bgr = cv2.imread(str(image_path))
-    if image_bgr is None:
-        return {"error": f"Could not load {image_path}"}
-    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-    img_h, img_w = image_rgb.shape[:2]
-
-    yolo_results = yolo_model(image_path, conf=conf_thresh, verbose=False)
-    if not yolo_results or len(yolo_results) == 0:
-        return {"boxes": [], "masks": [], "scores": [], "image_shape": (img_h, img_w)}
-
-    result = yolo_results[0]
-    boxes_xyxy = result.boxes.xyxy.cpu().numpy() if result.boxes is not None else np.array([])
-    scores = result.boxes.conf.cpu().numpy() if result.boxes is not None else np.array([])
-    classes = result.boxes.cls.cpu().numpy() if result.boxes is not None else np.array([])
-
-    marker_ppcm = calculate_pixels_per_cm_from_marker(
-        result,
-        marker_class_id=1,
-        marker_real_cm=combined_cfg.get("marker_real_cm", 3.0),
-    )
-
-    refined_masks = []
-    refined_boxes = []
-    refined_scores = []
-
-    unet_model.eval()
-    mean = torch.tensor(IMAGENET_MEAN).view(1, 3, 1, 1).to(device)
-    std = torch.tensor(IMAGENET_STD).view(1, 3, 1, 1).to(device)
-
-    wound_class_id = 0
-    for i, box in enumerate(boxes_xyxy):
-        if int(classes[i]) != wound_class_id:
-            continue
-        x1, y1, x2, y2 = box
-        bw, bh = x2 - x1, y2 - y1
-        pad_x, pad_y = bw * roi_padding, bh * roi_padding
-        cx1 = max(0, int(x1 - pad_x))
-        cy1 = max(0, int(y1 - pad_y))
-        cx2 = min(img_w, int(x2 + pad_x))
-        cy2 = min(img_h, int(y2 + pad_y))
-
-        crop = image_rgb[cy1:cy2, cx1:cx2]
-        if crop.size == 0:
-            continue
-
-        crop_resized = cv2.resize(crop, (unet_size[1], unet_size[0]))
-        crop_tensor = torch.from_numpy(crop_resized).permute(2, 0, 1).float().unsqueeze(0) / 255.0
-        crop_tensor = (crop_tensor.to(device) - mean) / std
-
-        pred_mask = _unet_predict_with_tta(
-            unet_model, crop_tensor, mask_thresh, enable_tta=enable_tta,
-        )
-
-        full_mask = np.zeros((img_h, img_w), dtype=np.uint8)
-        crop_h, crop_w = cy2 - cy1, cx2 - cx1
-        if crop_h > 0 and crop_w > 0:
-            upscaled = cv2.resize(pred_mask, (crop_w, crop_h), interpolation=cv2.INTER_NEAREST)
-            full_mask[cy1:cy2, cx1:cx2] = upscaled
-
-        refined_masks.append(full_mask)
-        refined_boxes.append([cx1, cy1, cx2, cy2])
-        refined_scores.append(float(scores[i]))
-
-    refined_masks, refined_boxes, refined_scores = _mask_nms(
-        refined_masks, refined_boxes, refined_scores, iou_thresh=0.5,
-    )
-
-    return {
-        "boxes": refined_boxes,
-        "masks": refined_masks,
-        "scores": refined_scores,
-        "image_shape": (img_h, img_w),
-        "pixels_per_cm": marker_ppcm,
-    }
-
-
-def calculate_pixels_per_cm_from_marker(
-    yolo_result,
-    marker_class_id: int = 1,
-    marker_real_cm: float = 3.0,
-) -> Optional[float]:
-    """
-    Estimate pixels_per_cm from a detected 3x3 cm reference marker.
-
-    Uses the average of the marker bbox width and height to compute
-    the scale factor.  Returns None if no marker was detected.
-    """
-    if yolo_result.boxes is None:
-        return None
-
-    classes = yolo_result.boxes.cls.cpu().numpy()
-    boxes = yolo_result.boxes.xyxy.cpu().numpy()
-
-    marker_idxs = np.where(classes == marker_class_id)[0]
-    if len(marker_idxs) == 0:
-        return None
-
-    best_idx = marker_idxs[
-        yolo_result.boxes.conf.cpu().numpy()[marker_idxs].argmax()
-    ]
-    x1, y1, x2, y2 = boxes[best_idx]
-    marker_px = ((x2 - x1) + (y2 - y1)) / 2.0
-    return marker_px / marker_real_cm
-
+# Core logic lives in ``combined/``; symbols re-imported above for public API.
 
 def calculate_wound_area(
     mask: np.ndarray,
@@ -896,100 +711,6 @@ def calculate_wound_area(
     """Calculate wound area in cm^2 from a binary mask."""
     wound_pixels = int(mask.sum())
     return wound_pixels / (pixels_per_cm ** 2)
-
-
-@torch.no_grad()
-def evaluate_combined_coco(
-    config: dict,
-    script_dir: Path,
-    yolo_model,
-    unet_model: nn.Module,
-    device: torch.device,
-) -> Dict[str, float]:
-    """Compute COCO-style AP metrics for the combined pipeline output.
-
-    Converts predicted masks to RLE, builds a COCO-format results list,
-    and evaluates using pycocotools.  Returns empty dict if pycocotools
-    is unavailable.
-    """
-    try:
-        from pycocotools.coco import COCO as CocoAPI
-        from pycocotools.cocoeval import COCOeval
-        from pycocotools import mask as mask_utils
-    except ImportError:
-        print("  [SKIP] pycocotools not available — COCO AP evaluation skipped.")
-        return {}
-
-    project_root = script_dir.parent.parent
-    test_ann_path = str((project_root / config["ann_test"]).resolve())
-    data_root = (project_root / config["data_root"]).resolve()
-
-    coco_gt = CocoAPI(test_ann_path)
-    img_ids = coco_gt.getImgIds()
-
-    bbox_results = []
-    segm_results = []
-
-    for img_id in img_ids:
-        img_info = coco_gt.loadImgs(img_id)[0]
-        img_path = str(data_root / img_info["file_name"])
-        if not Path(img_path).exists():
-            continue
-
-        pred = combined_inference(yolo_model, unet_model, img_path, device, config, enable_tta=True)
-        if "error" in pred or not pred["masks"]:
-            continue
-
-        orig_h, orig_w = img_info["height"], img_info["width"]
-
-        for mask_np, box, score in zip(pred["masks"], pred["boxes"], pred["scores"]):
-            if mask_np.shape != (orig_h, orig_w):
-                continue
-
-            rle = mask_utils.encode(np.asfortranarray(mask_np.astype(np.uint8)))
-            rle["counts"] = rle["counts"].decode("utf-8")
-
-            segm_results.append({
-                "image_id": img_id,
-                "category_id": 1,
-                "segmentation": rle,
-                "score": float(score),
-            })
-
-            x1, y1, x2, y2 = box
-            bbox_results.append({
-                "image_id": img_id,
-                "category_id": 1,
-                "bbox": [float(x1), float(y1), float(x2 - x1), float(y2 - y1)],
-                "score": float(score),
-            })
-
-    metrics = {}
-
-    for iou_type, results in [("bbox", bbox_results), ("segm", segm_results)]:
-        if not results:
-            continue
-        coco_dt = coco_gt.loadRes(results)
-        evaluator = COCOeval(coco_gt, coco_dt, iouType=iou_type)
-        evaluator.evaluate()
-        evaluator.accumulate()
-        evaluator.summarize()
-
-        metrics[f"coco_{iou_type}_AP"] = float(evaluator.stats[0])
-        metrics[f"coco_{iou_type}_AP50"] = float(evaluator.stats[1])
-        metrics[f"coco_{iou_type}_AP75"] = float(evaluator.stats[2])
-
-    if "coco_bbox_AP50" in metrics and "coco_segm_AP50" in metrics:
-        metrics["coco_combined_AP50"] = (
-            metrics["coco_bbox_AP50"] + metrics["coco_segm_AP50"]
-        ) / 2.0
-
-    results_dir = script_dir / "results" / "combined"
-    results_dir.mkdir(parents=True, exist_ok=True)
-    with open(results_dir / "coco_metrics.json", "w", encoding="utf-8") as f:
-        json.dump(metrics, f, indent=2)
-
-    return metrics
 
 
 def evaluate_combined(config: dict, script_dir: Path) -> dict:
@@ -1101,7 +822,13 @@ def evaluate_combined(config: dict, script_dir: Path) -> dict:
                     overlay, 0.5, mask_color, 0.5, 0
                 )[combined_mask > 0]
                 for box in pred["boxes"]:
-                    cv2.rectangle(overlay, (box[0], box[1]), (box[2], box[3]), (0, 255, 0), 2)
+                    cv2.rectangle(
+                        overlay,
+                        (int(box[0]), int(box[1])),
+                        (int(box[2]), int(box[3])),
+                        (0, 255, 0),
+                        2,
+                    )
                 fname = Path(img_info["file_name"]).stem
                 out = pred_dir / f"combined_{fname}.png"
                 cv2.imwrite(str(out), overlay)
@@ -1130,7 +857,9 @@ def evaluate_combined(config: dict, script_dir: Path) -> dict:
     print(f"  Mean IoU:  {metrics['mean_iou']:.4f}")
     if coco_metrics:
         print(f"  COCO bbox AP50:  {coco_metrics.get('coco_bbox_AP50', 0):.4f}")
+        print(f"  COCO bbox AP75:  {coco_metrics.get('coco_bbox_AP75', 0):.4f}")
         print(f"  COCO segm AP50:  {coco_metrics.get('coco_segm_AP50', 0):.4f}")
+        print(f"  COCO segm AP75:  {coco_metrics.get('coco_segm_AP75', 0):.4f}")
     print(f"  Images evaluated: {metrics['n_images_evaluated']}")
     print(f"  Predictions saved: {saved_count} to {pred_dir}")
     return metrics
@@ -1607,7 +1336,13 @@ def predict_single_image(
     )[combined_mask > 0]
 
     for box, score in zip(pred.get("boxes", []), pred.get("scores", [])):
-        cv2.rectangle(overlay, (box[0], box[1]), (box[2], box[3]), (0, 255, 0), 2)
+        cv2.rectangle(
+            overlay,
+            (int(box[0]), int(box[1])),
+            (int(box[2]), int(box[3])),
+            (0, 255, 0),
+            2,
+        )
         cv2.putText(overlay, f"{score:.2f}", (box[0], box[1] - 5),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 

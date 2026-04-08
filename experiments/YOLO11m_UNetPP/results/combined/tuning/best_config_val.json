@@ -1,0 +1,18 @@
+{
+  "yolo_conf_thresh": 0.2,
+  "unet_mask_thresh": 0.3,
+  "roi_padding": 0.0,
+  "postprocess_preset": "none",
+  "min_mask_area": 0,
+  "balanced_score": 0.5900023104126088,
+  "coco_bbox_AP": 0.4946668286506336,
+  "coco_bbox_AP50": 0.8130769560472532,
+  "coco_bbox_AP75": 0.5886492966383551,
+  "coco_segm_AP": 0.18603094698703393,
+  "coco_segm_AP50": 0.6037774842902346,
+  "coco_segm_AP75": 0.038705745324898615,
+  "coco_combined_AP50": 0.7084272201687438,
+  "mean_dice": 0.7053507426250366,
+  "mean_iou": 0.5701428360259191,
+  "n_images_evaluated": 55
+}

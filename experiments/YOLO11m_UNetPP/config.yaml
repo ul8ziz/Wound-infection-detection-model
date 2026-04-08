@@ -65,13 +65,32 @@ unet:
   loss_dice_weight: 0.5
   focal_alpha: 0.25
   focal_gamma: 2.0
-  roi_padding: 0.1
+  roi_padding: 0.1   # training ROI expansion only (GT bbox in COCO JSON)
 
-# === Combined Inference ===
+# === Combined Inference (YOLO + U-Net++ on full images) ===
+# ``combined.roi_padding`` is independent: expands YOLO boxes at inference only.
+# Tuned defaults (val, partial grid — see results/combined/tuning/best_config_val.json; re-run scripts/tune_combined.py for full search):
 combined:
-  yolo_conf_thresh: 0.25
-  unet_mask_thresh: 0.5
-  roi_padding: 0.1
+  yolo_conf_thresh: 0.2
+  yolo_min_conf_inference: 0.001   # Ultralytics conf= (low); filter with yolo_conf_thresh in Python)
+  unet_mask_thresh: 0.3
+  roi_padding: 0.0
+  mask_upscale: "linear_probs"     # linear_probs | nearest_binary
+  bbox_selection_strategy: "highest_conf"   # highest_conf | largest_area | merge_overlapping
+  merge_iou_thresh: 0.5
+  coco_bbox_mode: "yolo_xyxy"      # yolo_xyxy | mask_tight | padded_roi (legacy eval)
+  min_mask_area: 0
+  postprocess_preset: "none"       # none | remove_small_cc | binary_closing | open_close | fill_holes | close_fill
+  postprocess: []                  # optional ordered ops; see combined/postprocess.py
+  enable_tta: true
+  debug_save_intermediates: false
+  debug_output_dir: "results/combined/debug"
+  debug_max_images: 16
+  balanced_score_weights:
+    bbox_AP50: 0.35
+    segm_AP50: 0.35
+    bbox_AP75: 0.15
+    segm_AP75: 0.15
   pixels_per_cm: 26.0
   marker_real_cm: 3.0
   num_qualitative_samples: 8
