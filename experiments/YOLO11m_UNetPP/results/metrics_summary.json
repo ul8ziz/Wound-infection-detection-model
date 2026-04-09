@@ -1,5 +1,29 @@
 {
   "yolo": {
+    "epoch": 60.0,
+    "time": 4012.75,
+    "train/box_loss": 0.8125,
+    "train/seg_loss": 1.94289,
+    "train/cls_loss": 0.49897,
+    "train/dfl_loss": 1.0036,
+    "train/sem_loss": 0.0,
+    "metrics/precision(B)": 0.89708,
+    "metrics/recall(B)": 0.82042,
+    "metrics/mAP50(B)": 0.85914,
+    "metrics/mAP50-95(B)": 0.5163,
+    "metrics/precision(M)": 0.80739,
+    "metrics/recall(M)": 0.72941,
+    "metrics/mAP50(M)": 0.71828,
+    "metrics/mAP50-95(M)": 0.26011,
+    "val/box_loss": 1.32751,
+    "val/seg_loss": 3.02374,
+    "val/cls_loss": 0.71229,
+    "val/dfl_loss": 1.3802,
+    "val/sem_loss": 0.0,
+    "lr/pg0": 0.000265,
+    "lr/pg1": 0.000265,
+    "lr/pg2": 0.000265,
+    "training_completed": true,
     "bbox_mAP50": 0.8169057106589259,
     "bbox_mAP50_95": 0.5387431578563946,
     "segm_mAP50": 0.662023243885349,
@@ -7,13 +31,13 @@
     "combined_AP50": 0.7394644772721375
   },
   "unet": {
-    "best_dice": 0.7772365157826021,
-    "best_epoch": 23,
-    "training_time_s": 1674.2945306301117,
+    "best_dice": 0.7757628615061752,
+    "best_epoch": 19,
+    "training_time_s": 1657.2760934829712,
     "test_metrics": {
-      "dice": 0.785281139452095,
-      "iou": 0.6612505366670011,
-      "pixel_accuracy": 0.8886441067532376,
+      "dice": 0.7836785381136959,
+      "iou": 0.6605868748943102,
+      "pixel_accuracy": 0.8878907899598818,
       "n_samples": 74
     },
     "config": {
@@ -63,22 +87,22 @@
     }
   },
   "combined": {
-    "mean_dice": 0.6697207798349728,
-    "mean_iou": 0.5505392265133112,
-    "mean_dice_conditional": 0.6821230164985834,
-    "mean_iou_conditional": 0.5607343973746689,
+    "mean_dice": 0.6694928697639307,
+    "mean_iou": 0.5490610143723371,
+    "mean_dice_conditional": 0.6818908858706701,
+    "mean_iou_conditional": 0.5592288109347878,
     "n_images_total": 55,
     "n_images_evaluated": 54,
     "n_images_missed": 1,
     "n_predictions_saved": 8,
-    "coco_bbox_AP": 0.49825104837661416,
-    "coco_bbox_AP50": 0.7388751361802459,
-    "coco_bbox_AP75": 0.5697331037400915,
-    "coco_segm_AP": 0.20856593764498726,
-    "coco_segm_AP50": 0.597194891426407,
-    "coco_segm_AP75": 0.15106712911036377,
-    "coco_combined_AP50": 0.6680350138033264,
-    "coco_combined_AP75": 0.3604001164252276
+    "coco_bbox_AP": 0.4805462958206544,
+    "coco_bbox_AP50": 0.7501815919575405,
+    "coco_bbox_AP75": 0.5222656302384545,
+    "coco_segm_AP": 0.1984375086895963,
+    "coco_segm_AP50": 0.561053652319715,
+    "coco_segm_AP75": 0.09908720253309644,
+    "coco_combined_AP50": 0.6556176221386278,
+    "coco_combined_AP75": 0.3106764163857755
   },
   "config": {
     "seed": 42,
@@ -198,5 +222,5 @@
     },
     "_config_path": "E:\\GitHub\\Wound-infection-detection-model\\experiments\\YOLO11m_UNetPP\\config.yaml"
   },
-  "timestamp": "2026-04-09T19:28:01.858088"
+  "timestamp": "2026-04-09T21:12:57.104194"
 }

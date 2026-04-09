@@ -1,6 +1,6 @@
 # YOLO11m + U-Net++ Training Report
 
-Generated: 2026-04-09 19:28:01
+Generated: 2026-04-09 21:12:57
 
 ---
 
@@ -104,6 +104,30 @@ Generated: 2026-04-09 19:28:01
 
 | Metric | Value |
 |--------|-------|
+| epoch | 60.0000 |
+| time | 4012.7500 |
+| train/box_loss | 0.8125 |
+| train/seg_loss | 1.9429 |
+| train/cls_loss | 0.4990 |
+| train/dfl_loss | 1.0036 |
+| train/sem_loss | 0.0000 |
+| metrics/precision(B) | 0.8971 |
+| metrics/recall(B) | 0.8204 |
+| metrics/mAP50(B) | 0.8591 |
+| metrics/mAP50-95(B) | 0.5163 |
+| metrics/precision(M) | 0.8074 |
+| metrics/recall(M) | 0.7294 |
+| metrics/mAP50(M) | 0.7183 |
+| metrics/mAP50-95(M) | 0.2601 |
+| val/box_loss | 1.3275 |
+| val/seg_loss | 3.0237 |
+| val/cls_loss | 0.7123 |
+| val/dfl_loss | 1.3802 |
+| val/sem_loss | 0.0000 |
+| lr/pg0 | 0.0003 |
+| lr/pg1 | 0.0003 |
+| lr/pg2 | 0.0003 |
+| training_completed | True |
 | bbox_mAP50 | 0.8169 |
 | bbox_mAP50_95 | 0.5387 |
 | segm_mAP50 | 0.6620 |
@@ -114,16 +138,16 @@ Generated: 2026-04-09 19:28:01
 
 ## U-Net++ Results
 
-- **Best Dice (val):** 0.7772 at epoch 23
-- **Training time:** 1674s
+- **Best Dice (val):** 0.7758 at epoch 19
+- **Training time:** 1657s
 
 ### Test Metrics
 
 | Metric | Value |
 |--------|-------|
-| dice | 0.7853 |
-| iou | 0.6613 |
-| pixel_accuracy | 0.8886 |
+| dice | 0.7837 |
+| iou | 0.6606 |
+| pixel_accuracy | 0.8879 |
 
 ---
 
@@ -131,22 +155,22 @@ Generated: 2026-04-09 19:28:01
 
 | Metric | Value |
 |--------|-------|
-| mean_dice | 0.6697 |
-| mean_iou | 0.5505 |
-| mean_dice_conditional | 0.6821 |
-| mean_iou_conditional | 0.5607 |
+| mean_dice | 0.6695 |
+| mean_iou | 0.5491 |
+| mean_dice_conditional | 0.6819 |
+| mean_iou_conditional | 0.5592 |
 | n_images_total | 55 |
 | n_images_evaluated | 54 |
 | n_images_missed | 1 |
 | n_predictions_saved | 8 |
-| coco_bbox_AP | 0.4983 |
-| coco_bbox_AP50 | 0.7389 |
-| coco_bbox_AP75 | 0.5697 |
-| coco_segm_AP | 0.2086 |
-| coco_segm_AP50 | 0.5972 |
-| coco_segm_AP75 | 0.1511 |
-| coco_combined_AP50 | 0.6680 |
-| coco_combined_AP75 | 0.3604 |
+| coco_bbox_AP | 0.4805 |
+| coco_bbox_AP50 | 0.7502 |
+| coco_bbox_AP75 | 0.5223 |
+| coco_segm_AP | 0.1984 |
+| coco_segm_AP50 | 0.5611 |
+| coco_segm_AP75 | 0.0991 |
+| coco_combined_AP50 | 0.6556 |
+| coco_combined_AP75 | 0.3107 |
 
 ---
 
