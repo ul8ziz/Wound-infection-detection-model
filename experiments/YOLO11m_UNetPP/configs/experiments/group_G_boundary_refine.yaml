@@ -1,0 +1,24 @@
+experiment_name: "group_G_boundary_refine"
+unet:
+  input_size: [384, 384]
+  batch_size: 8
+  roi_crop_mode: "mixed"
+  eval_roi_crop_mode: "yolo_predicted"
+  roi_mix_weights:
+    gt: 0.45
+    jitter: 0.30
+    yolo_cached: 0.25
+  roi_jitter:
+    scale_min: 0.85
+    scale_max: 1.15
+    shift_frac: 0.10
+  yolo_roi_cache_path: "experiments/YOLO11m_UNetPP/results/roi_cache/train_yolo_rois.json"
+  eval_yolo_roi_cache_path: "experiments/YOLO11m_UNetPP/results/roi_cache/val_yolo_rois.json"
+  loss_type: "focal_dice_boundary"
+  loss_boundary_weight: 0.15
+  boundary_kernel_size: 5
+combined:
+  multi_scale_refinement: true
+  multi_scale_roi_paddings: [0.0, 0.12, 0.2]
+  multi_scale_fusion: "mean"
+  refinement_postprocess: "boundary_refine"

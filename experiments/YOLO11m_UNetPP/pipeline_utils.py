@@ -19,7 +19,7 @@ import os
 import random
 import shutil
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import albumentations as A
 import cv2
@@ -88,6 +88,8 @@ def load_config(
     """
     with open(config_path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f)
+    if isinstance(data, dict):
+        data["_config_path"] = str(Path(config_path).resolve())
     if validate_combined and data is not None:
         try:
             from combined.config import combined_config_from_dict
@@ -364,10 +366,20 @@ class WoundROIDataset(Dataset):
         transforms: Optional[A.Compose] = None,
         roi_padding: float = 0.1,
         target_classes: Optional[List[str]] = None,
+        crop_mode: str = "gt_only",
+        crop_mix_weights: Optional[Dict[str, float]] = None,
+        crop_jitter: Optional[Dict[str, float]] = None,
+        yolo_roi_cache_path: Optional[Union[str, Path]] = None,
+        yolo_match_iou_min: float = 0.0,
     ):
         self.root = Path(root)
         self.transforms = transforms
         self.roi_padding = roi_padding
+        self.crop_mode = crop_mode
+        self.crop_mix_weights = self._normalize_mix_weights(crop_mix_weights)
+        self.crop_jitter = crop_jitter or {}
+        self.yolo_match_iou_min = float(yolo_match_iou_min)
+        self.yolo_roi_cache = self._load_yolo_roi_cache(yolo_roi_cache_path)
 
         with open(annotation_file, "r", encoding="utf-8") as f:
             coco = json.load(f)
@@ -402,6 +414,40 @@ class WoundROIDataset(Dataset):
             return alt
         return p
 
+    @staticmethod
+    def _normalize_mix_weights(crop_mix_weights: Optional[Dict[str, float]]) -> Dict[str, float]:
+        weights = {"gt": 1.0, "jitter": 0.0, "yolo_cached": 0.0}
+        if crop_mix_weights:
+            for key in weights:
+                if key in crop_mix_weights:
+                    weights[key] = max(0.0, float(crop_mix_weights[key]))
+        total = sum(weights.values())
+        if total <= 0:
+            return {"gt": 1.0, "jitter": 0.0, "yolo_cached": 0.0}
+        return {k: v / total for k, v in weights.items()}
+
+    @staticmethod
+    def _load_yolo_roi_cache(
+        yolo_roi_cache_path: Optional[Union[str, Path]],
+    ) -> Dict[str, Dict[str, Any]]:
+        if not yolo_roi_cache_path:
+            return {}
+        cache_path = Path(yolo_roi_cache_path)
+        if not cache_path.is_file():
+            logger.warning("YOLO ROI cache not found: %s", cache_path)
+            return {}
+        with open(cache_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        matches = payload.get("matches", payload)
+        if not isinstance(matches, dict):
+            return {}
+        return matches
+
+    @staticmethod
+    def _bbox_xyxy_from_coco_bbox(bbox: List[float]) -> Tuple[float, float, float, float]:
+        x, y, w, h = bbox
+        return float(x), float(y), float(x + w), float(y + h)
+
     def _expand_bbox(self, bbox: List[float], img_w: int, img_h: int) -> Tuple[int, int, int, int]:
         """Expand COCO bbox [x, y, w, h] by roi_padding and clamp to image."""
         x, y, w, h = bbox
@@ -412,6 +458,112 @@ class WoundROIDataset(Dataset):
         x2 = min(img_w, int(x + w + pad_x))
         y2 = min(img_h, int(y + h + pad_y))
         return x1, y1, x2, y2
+
+    def _expand_xyxy(
+        self,
+        bbox_xyxy: Tuple[float, float, float, float],
+        img_w: int,
+        img_h: int,
+    ) -> Tuple[int, int, int, int]:
+        from combined.geometry import xyxy_to_padded_roi
+
+        return xyxy_to_padded_roi(
+            bbox_xyxy[0],
+            bbox_xyxy[1],
+            bbox_xyxy[2],
+            bbox_xyxy[3],
+            img_w,
+            img_h,
+            self.roi_padding,
+        )
+
+    def _jitter_bbox_xyxy(
+        self,
+        bbox_xyxy: Tuple[float, float, float, float],
+        img_w: int,
+        img_h: int,
+    ) -> Tuple[float, float, float, float]:
+        x1, y1, x2, y2 = bbox_xyxy
+        bw = max(x2 - x1, 1.0)
+        bh = max(y2 - y1, 1.0)
+        cx = 0.5 * (x1 + x2)
+        cy = 0.5 * (y1 + y2)
+
+        scale_min = float(self.crop_jitter.get("scale_min", 0.9))
+        scale_max = float(self.crop_jitter.get("scale_max", 1.1))
+        shift_frac = float(self.crop_jitter.get("shift_frac", 0.08))
+
+        scale = float(np.random.uniform(scale_min, scale_max))
+        shift_x = float(np.random.uniform(-shift_frac, shift_frac) * bw)
+        shift_y = float(np.random.uniform(-shift_frac, shift_frac) * bh)
+
+        new_w = max(2.0, bw * scale)
+        new_h = max(2.0, bh * scale)
+        cx = np.clip(cx + shift_x, 0.0, float(img_w))
+        cy = np.clip(cy + shift_y, 0.0, float(img_h))
+
+        out_x1 = np.clip(cx - 0.5 * new_w, 0.0, float(img_w - 1))
+        out_y1 = np.clip(cy - 0.5 * new_h, 0.0, float(img_h - 1))
+        out_x2 = np.clip(cx + 0.5 * new_w, float(out_x1 + 1.0), float(img_w))
+        out_y2 = np.clip(cy + 0.5 * new_h, float(out_y1 + 1.0), float(img_h))
+        return float(out_x1), float(out_y1), float(out_x2), float(out_y2)
+
+    def _get_cached_yolo_bbox(self, ann: dict) -> Optional[Tuple[float, float, float, float]]:
+        ann_id = ann.get("id")
+        if ann_id is None:
+            return None
+        record = self.yolo_roi_cache.get(str(ann_id))
+        if not isinstance(record, dict):
+            return None
+        if float(record.get("iou", 0.0)) < self.yolo_match_iou_min:
+            return None
+        bbox_xyxy = record.get("bbox_xyxy")
+        if not isinstance(bbox_xyxy, list) or len(bbox_xyxy) != 4:
+            return None
+        return tuple(float(v) for v in bbox_xyxy)
+
+    def _choose_crop_mode(self, ann: dict) -> str:
+        if self.crop_mode == "gt_only":
+            return "gt"
+        if self.crop_mode == "yolo_predicted":
+            return "yolo_cached" if self._get_cached_yolo_bbox(ann) is not None else "gt"
+        if self.crop_mode != "mixed":
+            return "gt"
+
+        available = []
+        for mode, weight in self.crop_mix_weights.items():
+            if weight <= 0:
+                continue
+            if mode == "yolo_cached" and self._get_cached_yolo_bbox(ann) is None:
+                continue
+            available.append((mode, weight))
+        if not available:
+            return "gt"
+        modes = [m for m, _ in available]
+        weights = np.array([w for _, w in available], dtype=np.float64)
+        weights = weights / weights.sum()
+        return str(np.random.choice(modes, p=weights))
+
+    def _select_roi(
+        self,
+        ann: dict,
+        img_w: int,
+        img_h: int,
+    ) -> Tuple[int, int, int, int]:
+        crop_mode = self._choose_crop_mode(ann)
+        if crop_mode == "gt":
+            return self._expand_bbox(ann["bbox"], img_w, img_h)
+
+        base_xyxy = self._bbox_xyxy_from_coco_bbox(ann["bbox"])
+        if crop_mode == "jitter":
+            return self._expand_xyxy(self._jitter_bbox_xyxy(base_xyxy, img_w, img_h), img_w, img_h)
+
+        if crop_mode == "yolo_cached":
+            bbox_xyxy = self._get_cached_yolo_bbox(ann)
+            if bbox_xyxy is not None:
+                return self._expand_xyxy(bbox_xyxy, img_w, img_h)
+
+        return self._expand_bbox(ann["bbox"], img_w, img_h)
 
     def __getitem__(self, index: int) -> Tuple[torch.Tensor, torch.Tensor]:
         img_id, ann = self.samples[index]
@@ -446,7 +598,7 @@ class WoundROIDataset(Dataset):
                 continue
             cv2.fillPoly(mask_full, [poly.astype(np.int32)], 1)
 
-        x1, y1, x2, y2 = self._expand_bbox(ann["bbox"], img_w, img_h)
+        x1, y1, x2, y2 = self._select_roi(ann, img_w, img_h)
         crop_img = image[y1:y2, x1:x2]
         crop_mask = mask_full[y1:y2, x1:x2]
 
@@ -475,6 +627,14 @@ class WoundROIDataset(Dataset):
             crop_mask = crop_mask.unsqueeze(0)
 
         return crop_img, crop_mask
+
+
+class MixedWoundROIDataset(WoundROIDataset):
+    """Training ROI dataset with configurable GT / jitter / cached YOLO crops."""
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("crop_mode", "mixed")
+        super().__init__(*args, **kwargs)
 
 
 def get_unet_transforms(
@@ -525,9 +685,17 @@ def create_unet_datasets(
     unet_cfg = config["unet"]
     image_size = tuple(unet_cfg["input_size"])
     roi_padding = unet_cfg.get("roi_padding", 0.1)
+    train_crop_mode = str(unet_cfg.get("roi_crop_mode", "gt_only"))
+    eval_crop_mode = str(unet_cfg.get("eval_roi_crop_mode", "gt_only"))
+    crop_mix_weights = dict(unet_cfg.get("roi_mix_weights") or {})
+    crop_jitter = dict(unet_cfg.get("roi_jitter") or {})
+    yolo_roi_cache_path = unet_cfg.get("yolo_roi_cache_path")
+    eval_yolo_roi_cache_path = unet_cfg.get("eval_yolo_roi_cache_path", yolo_roi_cache_path)
+    yolo_match_iou_min = float(unet_cfg.get("yolo_match_iou_min", 0.0))
 
     print(f"  U-Net train root: {data_root_train}")
     print(f"  U-Net train ann:  {config['ann_train']}")
+    print(f"  U-Net crop mode (train/eval): {train_crop_mode} / {eval_crop_mode}")
     if data_root_train.resolve() == data_root.resolve() and "augmented" in str(
         config.get("ann_train", "")
     ):
@@ -537,23 +705,51 @@ def create_unet_datasets(
             "or images will be looked up under the wrong folder.",
         )
 
-    train_ds = WoundROIDataset(
+    train_dataset_cls = MixedWoundROIDataset if train_crop_mode == "mixed" else WoundROIDataset
+    train_ds = train_dataset_cls(
         root=data_root_train,
         annotation_file=str((project_root / config["ann_train"]).resolve()),
         transforms=get_unet_transforms(train=True, image_size=image_size),
         roi_padding=roi_padding,
+        crop_mode=train_crop_mode,
+        crop_mix_weights=crop_mix_weights,
+        crop_jitter=crop_jitter,
+        yolo_roi_cache_path=(
+            str((project_root / yolo_roi_cache_path).resolve())
+            if yolo_roi_cache_path and not Path(yolo_roi_cache_path).is_absolute()
+            else yolo_roi_cache_path
+        ),
+        yolo_match_iou_min=yolo_match_iou_min,
     )
     val_ds = WoundROIDataset(
         root=data_root,
         annotation_file=str((project_root / config["ann_val"]).resolve()),
         transforms=get_unet_transforms(train=False, image_size=image_size),
         roi_padding=roi_padding,
+        crop_mode=eval_crop_mode,
+        crop_mix_weights=crop_mix_weights,
+        crop_jitter=crop_jitter,
+        yolo_roi_cache_path=(
+            str((project_root / eval_yolo_roi_cache_path).resolve())
+            if eval_yolo_roi_cache_path and not Path(eval_yolo_roi_cache_path).is_absolute()
+            else eval_yolo_roi_cache_path
+        ),
+        yolo_match_iou_min=yolo_match_iou_min,
     )
     test_ds = WoundROIDataset(
         root=data_root,
         annotation_file=str((project_root / config["ann_test"]).resolve()),
         transforms=get_unet_transforms(train=False, image_size=image_size),
         roi_padding=roi_padding,
+        crop_mode=eval_crop_mode,
+        crop_mix_weights=crop_mix_weights,
+        crop_jitter=crop_jitter,
+        yolo_roi_cache_path=(
+            str((project_root / eval_yolo_roi_cache_path).resolve())
+            if eval_yolo_roi_cache_path and not Path(eval_yolo_roi_cache_path).is_absolute()
+            else eval_yolo_roi_cache_path
+        ),
+        yolo_match_iou_min=yolo_match_iou_min,
     )
     return train_ds, val_ds, test_ds
 

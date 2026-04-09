@@ -66,6 +66,12 @@ from pipeline_utils import (
     IMAGENET_STD,
     WOUND_ONLY_CLASSES,
 )
+from experiment_io import (
+    get_combined_dirs,
+    get_unet_best_checkpoint_path,
+    get_unet_dirs,
+    snapshot_config,
+)
 
 from combined.inference import combined_inference
 from combined.marker import calculate_pixels_per_cm_from_marker
@@ -279,18 +285,34 @@ def predict_yolo(
 # Stage 2: U-Net++
 # ============================================================================
 
-def build_unet_model(config: dict) -> nn.Module:
-    """Build U-Net++ with segmentation_models_pytorch."""
+def build_segmentation_model(config: dict) -> nn.Module:
+    """Build the configured ROI segmentation model."""
     import segmentation_models_pytorch as smp
+
     unet_cfg = config["unet"]
-    model = smp.UnetPlusPlus(
-        encoder_name=unet_cfg.get("encoder", "efficientnet-b1"),
-        encoder_weights=unet_cfg.get("encoder_weights", "imagenet"),
-        in_channels=unet_cfg.get("in_channels", 3),
-        classes=unet_cfg.get("classes", 1),
-        activation=None,
+    architecture = str(unet_cfg.get("architecture", "unetplusplus")).lower()
+    common_kwargs = {
+        "encoder_name": unet_cfg.get("encoder", "efficientnet-b1"),
+        "encoder_weights": unet_cfg.get("encoder_weights", "imagenet"),
+        "in_channels": unet_cfg.get("in_channels", 3),
+        "classes": unet_cfg.get("classes", 1),
+        "activation": None,
+    }
+
+    if architecture == "unetplusplus":
+        return smp.UnetPlusPlus(**common_kwargs)
+    if architecture == "deeplabv3plus":
+        return smp.DeepLabV3Plus(**common_kwargs)
+
+    raise ValueError(
+        f"Unsupported segmentation architecture '{architecture}'. "
+        "Supported: unetplusplus, deeplabv3plus."
     )
-    return model
+
+
+def build_unet_model(config: dict) -> nn.Module:
+    """Backward-compatible alias for the configured ROI segmentation model."""
+    return build_segmentation_model(config)
 
 
 def _mask_to_float01(t: torch.Tensor, *, like: torch.Tensor) -> torch.Tensor:
@@ -371,6 +393,59 @@ class FocalDiceLoss(nn.Module):
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         return (self.focal_weight * self.focal(pred, target)
                 + self.dice_weight * self.dice(pred, target))
+
+
+def _edge_band_mask(target: torch.Tensor, kernel_size: int = 5) -> torch.Tensor:
+    """Return a binary band around mask boundaries using morphological gradient."""
+    if kernel_size < 3:
+        kernel_size = 3
+    if kernel_size % 2 == 0:
+        kernel_size += 1
+
+    target = _mask_to_float01(target, like=target)
+    pad = kernel_size // 2
+    dilated = torch.nn.functional.max_pool2d(target, kernel_size=kernel_size, stride=1, padding=pad)
+    eroded = 1.0 - torch.nn.functional.max_pool2d(
+        1.0 - target,
+        kernel_size=kernel_size,
+        stride=1,
+        padding=pad,
+    )
+    return ((dilated - eroded) > 0).float()
+
+
+class BoundaryAwareFocalDiceLoss(nn.Module):
+    """Focal+Dice with an auxiliary boundary BCE term for sharper contours."""
+
+    def __init__(
+        self,
+        focal_weight: float = 0.5,
+        dice_weight: float = 0.5,
+        boundary_weight: float = 0.15,
+        alpha: float = 0.25,
+        gamma: float = 2.0,
+        boundary_kernel_size: int = 5,
+    ):
+        super().__init__()
+        self.base = FocalDiceLoss(
+            focal_weight=focal_weight,
+            dice_weight=dice_weight,
+            alpha=alpha,
+            gamma=gamma,
+        )
+        self.boundary_weight = boundary_weight
+        self.boundary_kernel_size = boundary_kernel_size
+
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        target = _mask_to_float01(target, like=pred)
+        base_loss = self.base(pred, target)
+        edge_mask = _edge_band_mask(target, kernel_size=self.boundary_kernel_size)
+        if edge_mask.sum().item() <= 0:
+            return base_loss
+
+        bce = torch.nn.functional.binary_cross_entropy_with_logits(pred.float(), target, reduction="none")
+        boundary_loss = (bce * edge_mask).sum() / edge_mask.sum().clamp_min(1.0)
+        return base_loss + self.boundary_weight * boundary_loss
 
 
 def train_one_epoch_unet(
@@ -498,9 +573,38 @@ def load_unet_checkpoint(model: nn.Module, path: Path, device: torch.device) -> 
     return ckpt
 
 
+def resolve_checkpoint_path(
+    checkpoint_path: Optional[str],
+    script_dir: Path,
+) -> Optional[Path]:
+    """Resolve an optional checkpoint path from absolute or project-relative input."""
+    if not checkpoint_path:
+        return None
+    p = Path(checkpoint_path)
+    if p.is_absolute():
+        return p
+    candidates = [
+        (script_dir / checkpoint_path).resolve(),
+        (script_dir.parent.parent / checkpoint_path).resolve(),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
 def build_unet_criterion(unet_cfg: dict) -> nn.Module:
     """Build U-Net++ loss from ``config['unet']`` (same logic as ``train_unet`` / notebook)."""
-    loss_type = unet_cfg.get("loss_type", "focal_dice")
+    loss_type = str(unet_cfg.get("loss_type", "focal_dice")).lower()
+    if loss_type in {"focal_dice_boundary", "focal_dice_edge"}:
+        return BoundaryAwareFocalDiceLoss(
+            focal_weight=unet_cfg.get("loss_bce_weight", 0.5),
+            dice_weight=unet_cfg.get("loss_dice_weight", 0.5),
+            boundary_weight=unet_cfg.get("loss_boundary_weight", 0.15),
+            alpha=unet_cfg.get("focal_alpha", 0.25),
+            gamma=unet_cfg.get("focal_gamma", 2.0),
+            boundary_kernel_size=int(unet_cfg.get("boundary_kernel_size", 5)),
+        )
     if loss_type == "focal_dice":
         return FocalDiceLoss(
             focal_weight=unet_cfg.get("loss_bce_weight", 0.5),
@@ -550,9 +654,23 @@ def train_unet(config: dict, script_dir: Path) -> dict:
     model.to(device)
     print(f"  U-Net++ on {device} ({sum(p.numel() for p in model.parameters()):,} params)")
 
+    resume_path = resolve_checkpoint_path(unet_cfg.get("resume_checkpoint"), script_dir)
+    if resume_path is not None:
+        if not resume_path.exists():
+            raise FileNotFoundError(f"Resume checkpoint not found: {resume_path}")
+        ckpt_meta = load_unet_checkpoint(model, resume_path, device)
+        print(f"  Resumed from checkpoint: {resume_path}")
+        if isinstance(ckpt_meta, dict) and "epoch" in ckpt_meta:
+            print(f"  Resume epoch: {ckpt_meta['epoch']}")
+
+    if bool(unet_cfg.get("freeze_encoder", False)) and hasattr(model, "encoder"):
+        for param in model.encoder.parameters():
+            param.requires_grad = False
+        print("  Encoder frozen for fine-tuning.")
+
     criterion = build_unet_criterion(unet_cfg)
     optimizer = torch.optim.AdamW(
-        model.parameters(),
+        [p for p in model.parameters() if p.requires_grad],
         lr=unet_cfg.get("lr", 1e-4),
         weight_decay=unet_cfg.get("weight_decay", 1e-4),
     )
@@ -564,10 +682,19 @@ def train_unet(config: dict, script_dir: Path) -> dict:
 
     epochs = unet_cfg.get("epochs", 50)
     patience = unet_cfg.get("early_stop_patience", 10)
-    ckpt_dir = script_dir / "checkpoints" / "unet"
-    results_dir = script_dir / "results" / "unet"
+    unet_dirs = get_unet_dirs(script_dir, config)
+    ckpt_dir = unet_dirs["checkpoints"]
+    results_dir = unet_dirs["results"]
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     results_dir.mkdir(parents=True, exist_ok=True)
+    config_snapshot = snapshot_config(
+        config,
+        results_dir,
+        Path(config["_config_path"]) if config.get("_config_path") else None,
+    )
+    print(f"  Checkpoints: {ckpt_dir}")
+    print(f"  Results:     {results_dir}")
+    print(f"  Config:      {config_snapshot}")
 
     history = {
         "train_losses": [],
@@ -731,7 +858,7 @@ def evaluate_combined(config: dict, script_dir: Path) -> dict:
     yolo_model = build_yolo_model(str(yolo_best))
 
     # Load U-Net++
-    unet_best = script_dir / "checkpoints" / "unet" / "best_model.pth"
+    unet_best = get_unet_best_checkpoint_path(script_dir, config)
     if not unet_best.exists():
         print("[ERROR] U-Net++ best_model.pth not found. Train U-Net++ first.")
         return {}
@@ -758,10 +885,18 @@ def evaluate_combined(config: dict, script_dir: Path) -> dict:
 
     dice_scores, iou_scores = [], []
     wound_areas = []
-    results_combined = script_dir / "results" / "combined"
+    combined_dirs = get_combined_dirs(script_dir, config)
+    results_combined = combined_dirs["results"]
     results_combined.mkdir(parents=True, exist_ok=True)
-    pred_dir = results_combined / "predictions"
+    pred_dir = combined_dirs["predictions"]
     pred_dir.mkdir(parents=True, exist_ok=True)
+    config_snapshot = snapshot_config(
+        config,
+        results_combined,
+        Path(config["_config_path"]) if config.get("_config_path") else None,
+    )
+    print(f"  Results dir: {results_combined}")
+    print(f"  Config:      {config_snapshot}")
 
     num_qual = combined_cfg.get("num_qualitative_samples", 8)
     saved_count = 0
@@ -870,6 +1005,8 @@ def evaluate_combined(config: dict, script_dir: Path) -> dict:
         print(f"  COCO bbox AP75:  {coco_metrics.get('coco_bbox_AP75', 0):.4f}")
         print(f"  COCO segm AP50:  {coco_metrics.get('coco_segm_AP50', 0):.4f}")
         print(f"  COCO segm AP75:  {coco_metrics.get('coco_segm_AP75', 0):.4f}")
+        print(f"  COCO combined AP50: {coco_metrics.get('coco_combined_AP50', 0):.4f}")
+        print(f"  COCO combined AP75: {coco_metrics.get('coco_combined_AP75', 0):.4f}")
     print(f"  Images evaluated: {metrics['n_images_evaluated']}")
     print(f"  Predictions saved: {saved_count} to {pred_dir}")
     return metrics

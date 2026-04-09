@@ -86,16 +86,28 @@
   - تحميل الصورة من `data_root / file_name`.
   - بناء قناع ثنائي من `segmentation` بالمضلعات.
   - قص **ROI** حسب `bbox` مع توسيع `roi_padding`.
-  - تغيير الحجم إلى `input_size` من `config` (افتراضياً **256×256**؛ **384×384** لإعداد الجودة) وتطبيق Albumentations المُحسّن.
+  - يمكن تشغيل أوضاع قص متعددة لتقليل فجوة التدريب/الاستدلال:
+    - `gt_only`: قص GT التقليدي (السلوك القديم).
+    - `mixed`: مزيج من GT + jitter + صناديق YOLO المخزنة مسبقاً.
+    - `yolo_predicted`: استخدام صناديق YOLO المخزنة إذا توفرت.
+  - تغيير الحجم إلى `input_size` من `config` (يدعم الآن **256×256** و **384×384** و **512×512**) وتطبيق Albumentations المُحسّن.
 
 **التدريب:**
 
-- نموذج **`segmentation_models_pytorch.UnetPlusPlus`** (مشفّر من `config`، افتراضياً EfficientNet-B1؛ يمكن EfficientNet-B3، صنف واحد، `activation=None`).
-- خسارة **`FocalDiceLoss`** (Focal Loss + Dice بأوزان من `config`).
+- نموذج التقسيم من `segmentation_models_pytorch`:
+  - `unetplusplus` (الخط الأساسي).
+  - `deeplabv3plus` للمقارنة الأقوى إذا لزم.
+- الخسائر المتاحة:
+  - `focal_dice` (السلوك القديم).
+  - `focal_dice_boundary` = Focal + Dice + حدّ boundary-aware إضافي لتحسين الحواف الدقيقة.
 - محسن **AdamW** وجدولة **CosineAnnealingLR**.
+- يدعم `resume_checkpoint` و `freeze_encoder` للفين-تيون السريع.
 - حفظ **`best_model.pth`** عند أعلى Dice على التحقق، و**`last_checkpoint.pth`** كل عصر.
 - **إيقاف مبكر** إذا لم يتحسن Dice لعدد `early_stop_patience` عصور.
 - بعد الانتهاء: تقييم على **test** بحساب Dice وIoU ودقة البكسل.
+- عند تعيين `experiment_name` تُحفظ النتائج في مجلدات معزولة مثل:
+  - `checkpoints/unet/<experiment_name>/`
+  - `results/unet/<experiment_name>/`
 
 **مخرجات:** `checkpoints/unet/`, `results/unet/training_history.json`, `metrics_summary.json`, `unet_training_curves.png`.
 
@@ -111,8 +123,11 @@
 2. تصفية الاكتشافات: فقط فئة **wound** (class_id=0) تُمرر لـ U-Net++.
 3. لكل صندوق wound: توسيع الـ ROI بـ `roi_padding`، قص، تغيير الحجم، تطبيع ImageNet.
 4. **TTA (Test-Time Augmentation):** تمرير الصورة الأصلية + المعكوسة أفقياً عبر U-Net++، ثم متوسط الاحتمالات قبل العتبة.
-5. **Mask NMS:** إزالة القنوع المتداخلة (IoU > 0.5) للحد من التكرار.
-6. **معايرة المقياس:** إذا اكتشف YOLO مقياس 3×3 سم (class_id=1)، تُحسب `pixels_per_cm` تلقائياً بدلاً من القيمة الثابتة.
+5. يدعم **multi-scale refinement** عبر `multi_scale_roi_paddings` و `multi_scale_fusion`:
+   - مثال: tight ROI + pad 10% + pad 20% ثم دمج احتمالات القناع.
+6. يدعم **refinement_postprocess** الاختياري بعد التنبؤ، مثل `boundary_refine`.
+7. **Mask NMS:** إزالة القنوع المتداخلة (IoU > 0.5) للحد من التكرار.
+8. **معايرة المقياس:** إذا اكتشف YOLO مقياس 3×3 سم (class_id=1)، تُحسب `pixels_per_cm` تلقائياً بدلاً من القيمة الثابتة.
 
 **`evaluate_combined`:**
 
@@ -120,8 +135,9 @@
 - يبني قناع GT من مضلعات COCO.
 - يدمج قنوع التنبؤ ويحسب **Dice** و**IoU** مقابل GT.
 - **تقييم COCO AP:** يحوّل القنوع إلى RLE ويحسب AP/AP50/AP75 عبر `pycocotools` للمقارنة المنصفة مع Mask R-CNN.
+- يحسب الآن **`coco_combined_AP50`** و **`coco_combined_AP75`**.
 - **`calculate_wound_area`:** مساحة بالـ cm² باستخدام `pixels_per_cm` المُعايرة أو الافتراضية.
-- يحفظ `results/combined/metrics_summary.json`, `wound_areas.json`, `coco_metrics.json`, وصوراً في `results/combined/predictions/`.
+- عند تعيين `experiment_name` تُكتب نتائج combined داخل `results/combined/<experiment_name>/`.
 
 ---
 

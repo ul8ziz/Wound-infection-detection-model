@@ -80,8 +80,10 @@ Defaults favour **shorter training time**. For higher-quality ROI masks, set e.g
 | `batch_size` | 16 | |
 | `epochs` | 35 | With `early_stop_patience: 6` |
 | `lr` | 1e-4 | AdamW, CosineAnnealingLR (`scheduler_T_max` matches `epochs`) |
-| `loss_type` | focal_dice | Focal Loss + Dice for better boundaries |
+| `architecture` | unetplusplus | `unetplusplus` baseline, `deeplabv3plus` comparison option |
+| `loss_type` | focal_dice | `focal_dice` or `focal_dice_boundary` |
 | `roi_padding` | 0.1 | 10% expansion around GT bbox |
+| `roi_crop_mode` | gt_only | `gt_only`, `mixed`, `yolo_predicted` |
 
 ### Combined Inference
 
@@ -91,6 +93,8 @@ Defaults favour **shorter training time**. For higher-quality ROI masks, set e.g
 | `unet_mask_thresh` | 0.5 | |
 | `pixels_per_cm` | 26.0 | Fallback when marker not detected |
 | `marker_real_cm` | 3.0 | Physical size of reference marker |
+| `multi_scale_refinement` | false | Enables multi-padding ROI fusion |
+| `refinement_postprocess` | none | Optional boundary cleanup after thresholding |
 
 ---
 
@@ -103,12 +107,14 @@ checkpoints/
   infection/            # infection_classifier.pth
 results/
   yolo/                 # YOLO metrics, curves, predictions/
-  unet/                 # U-Net++ metrics, curves
+  unet/                 # U-Net++ metrics, curves (or results/unet/<experiment_name>/)
   combined/             # Combined Dice/IoU + COCO AP + wound areas + predictions/
+  roi_cache/            # Cached YOLO ROI matches for train/val splits
   infection/            # Infection classification metrics
   metrics_summary.json  # Global summary (all stages)
 reports/
   training_report.md    # Markdown report (all results including infection)
+  segmentation_improvement_experiments.md
 ```
 
 ---
@@ -117,8 +123,8 @@ reports/
 
 1. **COCO annotations** (`data/wound_focus_clean/*.json`) are converted to **YOLO segmentation format** (one `.txt` label file per image with normalized polygon coordinates)
 2. YOLO trains on full images (1024px) using Ultralytics API
-3. U-Net++ trains on **ROI crops** (size from `config`, default 256×256) with enhanced augmentations (ShiftScaleRotate, CLAHE, ColorJitter, ElasticTransform)
-4. At combined inference: YOLO detects wounds -> U-Net++ refines with TTA -> Mask NMS -> marker calibration -> area calculation
+3. ROI segmentation trains on configurable crops (256 / 384 / 512) with optional mixed GT + noisy + cached-YOLO ROI sampling
+4. At combined inference: YOLO detects wounds -> ROI model refines with optional TTA and multi-scale ROI fusion -> Mask NMS -> marker calibration -> area calculation
 5. COCO-style AP evaluation enables fair comparison with Mask R-CNN baseline
 6. Infection classifier predicts wound infection status from texture/color features
 
@@ -132,6 +138,9 @@ See `DOCUMENTATION.md` for full details. Key changes:
 - **Better mask quality** from 1024px YOLO + U-Net++ ROI input (raise `input_size` to 384 in config when you need maximum refinement)
 - **Reduced overfitting** from tuned augmentation (mosaic 0.5, no mixup)
 - **Focal+Dice loss** for sharper wound boundaries
+- **Boundary-aware loss option** for AP75-sensitive contour refinement
+- **Experiment-isolated outputs** via `experiment_name`
+- **Structured experiment runner** via `scripts/run_segmentation_experiment.py`
 - **Marker-based area calibration** (no more hardcoded pixels_per_cm)
 - **Infection classification** via wound texture/color analysis
 - **COCO AP evaluation** for fair comparison with Mask R-CNN

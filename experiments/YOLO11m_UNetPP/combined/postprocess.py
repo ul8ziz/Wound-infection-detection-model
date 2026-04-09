@@ -107,6 +107,16 @@ PRESETS: Dict[str, List[Dict[str, Any]]] = {
         {"type": "binary_close", "kernel": 5},
         {"type": "fill_holes"},
     ],
+    "boundary_refine": [
+        {"type": "binary_close", "kernel": 3},
+        {"type": "fill_holes"},
+        {"type": "smooth_contour", "epsilon_px": 1.5},
+    ],
+    "boundary_refine_strong": [
+        {"type": "binary_close", "kernel": 5},
+        {"type": "fill_holes"},
+        {"type": "smooth_contour", "epsilon_px": 2.0},
+    ],
 }
 
 
@@ -118,6 +128,13 @@ def resolve_postprocess(
     if explicit:
         return list(explicit)
     return list(PRESETS.get(preset, PRESETS["none"]))
+
+
+def resolve_refinement_postprocess(mode: str) -> List[Dict[str, Any]]:
+    """Resolve optional post-threshold refinement chain."""
+    if not mode or mode == "none":
+        return []
+    return list(PRESETS.get(mode, PRESETS["none"]))
 
 
 def filter_min_area(mask: np.ndarray, min_area: int) -> np.ndarray:

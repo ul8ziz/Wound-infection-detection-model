@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional
 SCRIPT_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
+from experiment_io import get_unet_best_checkpoint_path
 from combined.coco_eval import balanced_score, evaluate_combined_coco, pixel_metrics_on_split
 from combined.config import CombinedInferenceConfig, combined_config_from_dict
 from pipeline_utils import get_device, load_config
@@ -186,7 +187,7 @@ def main() -> None:
 
     device = get_device()
     yolo_best = SCRIPT_DIR / "checkpoints" / "yolo" / "best.pt"
-    unet_best = SCRIPT_DIR / "checkpoints" / "unet" / "best_model.pth"
+    unet_best = get_unet_best_checkpoint_path(SCRIPT_DIR, config)
     if not yolo_best.exists() or not unet_best.exists():
         print("ERROR: Missing checkpoints.")
         sys.exit(1)

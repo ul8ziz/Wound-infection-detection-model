@@ -1,0 +1,18 @@
+experiment_name: "group_C_res512"
+unet:
+  input_size: [512, 512]
+  batch_size: 4
+  roi_crop_mode: "mixed"
+  eval_roi_crop_mode: "yolo_predicted"
+  roi_mix_weights:
+    gt: 0.45
+    jitter: 0.30
+    yolo_cached: 0.25
+  roi_jitter:
+    scale_min: 0.85
+    scale_max: 1.15
+    shift_frac: 0.10
+  yolo_roi_cache_path: "experiments/YOLO11m_UNetPP/results/roi_cache/train_yolo_rois.json"
+  eval_yolo_roi_cache_path: "experiments/YOLO11m_UNetPP/results/roi_cache/val_yolo_rois.json"
+  resume_checkpoint: "experiments/YOLO11m_UNetPP/checkpoints/unet/group_B_yolo_like_crops/best_model.pth"
+  lr: 0.00005

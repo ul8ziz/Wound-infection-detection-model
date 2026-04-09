@@ -75,7 +75,7 @@ def save_combined_debug_steps(
       05  Cropped ROI before resize
       06  Resized ROI sent to U-Net (de-normalised)
       07  Raw U-Net probability map
-      08  Thresholded binary mask (256x256)
+      08  Thresholded binary mask (U-Net grid)
       09  Post-processed mask (ROI scale)
       10  Projected mask on original image
       11  Final bbox + mask overlay
@@ -177,7 +177,7 @@ def save_combined_debug_steps(
     prob_color = cv2.applyColorMap(prob_vis, cv2.COLORMAP_JET)
     cv2.imwrite(str(out_dir / f"{stem}_07_unet_prob_map.png"), prob_color)
 
-    # ── Panel 08: Thresholded mask (256x256) ──────────────────────────────
+    # ── Panel 08: Thresholded mask at U-Net grid ──────────────────────────
     th_small = (probs >= cfg.unet_mask_thresh).astype(np.uint8) * 255
     cv2.imwrite(str(out_dir / f"{stem}_08_thresh_mask_small.png"), th_small)
 

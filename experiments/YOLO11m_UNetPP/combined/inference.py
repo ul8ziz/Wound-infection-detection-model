@@ -18,7 +18,12 @@ from pipeline_utils import IMAGENET_MEAN, IMAGENET_STD
 from .config import CombinedInferenceConfig, combined_config_from_dict
 from .geometry import tight_bbox_from_binary_mask, xyxy_to_padded_roi
 from .marker import calculate_pixels_per_cm_from_marker
-from .postprocess import apply_postprocess_chain, filter_min_area, resolve_postprocess
+from .postprocess import (
+    apply_postprocess_chain,
+    filter_min_area,
+    resolve_postprocess,
+    resolve_refinement_postprocess,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +190,112 @@ def _select_wound_indices(
     return idxs
 
 
+def _predict_roi_probs(
+    unet_model: nn.Module,
+    image_rgb: np.ndarray,
+    yolo_xyxy: np.ndarray,
+    device: torch.device,
+    mean: torch.Tensor,
+    std: torch.Tensor,
+    unet_hw: Tuple[int, int],
+    enable_tta: bool,
+    roi_padding: float,
+) -> Optional[Dict[str, Any]]:
+    img_h, img_w = image_rgb.shape[:2]
+    x1, y1, x2, y2 = float(yolo_xyxy[0]), float(yolo_xyxy[1]), float(yolo_xyxy[2]), float(yolo_xyxy[3])
+    cx1, cy1, cx2, cy2 = xyxy_to_padded_roi(x1, y1, x2, y2, img_w, img_h, roi_padding)
+
+    crop = image_rgb[cy1:cy2, cx1:cx2]
+    if crop.size == 0:
+        return None
+
+    uh, uw = unet_hw[0], unet_hw[1]
+    crop_resized = cv2.resize(crop, (uw, uh), interpolation=cv2.INTER_LINEAR)
+    crop_tensor = torch.from_numpy(crop_resized).permute(2, 0, 1).float().unsqueeze(0) / 255.0
+    crop_tensor = (crop_tensor.to(device) - mean) / std
+
+    probs = _unet_probs_tta(unet_model, crop_tensor, enable_tta)
+    crop_h, crop_w = cy2 - cy1, cx2 - cx1
+    prob_up = cv2.resize(probs.astype(np.float32), (crop_w, crop_h), interpolation=cv2.INTER_LINEAR)
+    return {
+        "probs_small": probs.astype(np.float32),
+        "prob_up": prob_up,
+        "crop_box": (cx1, cy1, cx2, cy2),
+    }
+
+
+def _full_prob_canvas(
+    prob_up: np.ndarray,
+    crop_box: Tuple[int, int, int, int],
+    image_shape: Tuple[int, int],
+) -> np.ndarray:
+    img_h, img_w = image_shape
+    canvas = np.zeros((img_h, img_w), dtype=np.float32)
+    x1, y1, x2, y2 = crop_box
+    canvas[y1:y2, x1:x2] = prob_up.astype(np.float32)
+    return canvas
+
+
+def _multi_scale_weights(cfg: CombinedInferenceConfig, n_scales: int) -> List[float]:
+    weights = [float(w) for w in cfg.multi_scale_weights]
+    if len(weights) != n_scales or sum(weights) <= 0:
+        return [1.0] * n_scales
+    return weights
+
+
+def _fuse_multiscale_probabilities(
+    predictions: List[Dict[str, Any]],
+    image_shape: Tuple[int, int],
+    cfg: CombinedInferenceConfig,
+) -> Tuple[np.ndarray, List[float]]:
+    if len(predictions) == 1:
+        pred = predictions[0]
+        return _full_prob_canvas(pred["prob_up"], pred["crop_box"], image_shape), list(pred["crop_box"])
+
+    if cfg.multi_scale_fusion == "stability_select":
+        masks = []
+        canvases = []
+        for pred in predictions:
+            canvas = _full_prob_canvas(pred["prob_up"], pred["crop_box"], image_shape)
+            canvases.append(canvas)
+            masks.append((canvas >= cfg.unet_mask_thresh).astype(np.uint8))
+        mean_ious: List[float] = []
+        for i, mask_i in enumerate(masks):
+            if len(masks) == 1:
+                mean_ious.append(1.0)
+                continue
+            pair_scores = []
+            for j, mask_j in enumerate(masks):
+                if i == j:
+                    continue
+                pair_scores.append(_mask_iou(mask_i, mask_j))
+            mean_ious.append(float(np.mean(pair_scores)) if pair_scores else 1.0)
+        best_idx = int(np.argmax(mean_ious))
+        crop_box = predictions[best_idx]["crop_box"]
+        return canvases[best_idx], [float(crop_box[0]), float(crop_box[1]), float(crop_box[2]), float(crop_box[3])]
+
+    weights = _multi_scale_weights(cfg, len(predictions))
+    prob_sum = np.zeros(image_shape, dtype=np.float32)
+    weight_sum = np.zeros(image_shape, dtype=np.float32)
+    x1s: List[int] = []
+    y1s: List[int] = []
+    x2s: List[int] = []
+    y2s: List[int] = []
+
+    for pred, weight in zip(predictions, weights):
+        crop_box = pred["crop_box"]
+        x1, y1, x2, y2 = crop_box
+        prob_sum[y1:y2, x1:x2] += pred["prob_up"].astype(np.float32) * float(weight)
+        weight_sum[y1:y2, x1:x2] += float(weight)
+        x1s.append(x1)
+        y1s.append(y1)
+        x2s.append(x2)
+        y2s.append(y2)
+
+    fused = np.divide(prob_sum, np.maximum(weight_sum, 1e-6))
+    return fused, [float(min(x1s)), float(min(y1s)), float(max(x2s)), float(max(y2s))]
+
+
 def _refine_one_roi(
     unet_model: nn.Module,
     image_rgb: np.ndarray,
@@ -198,34 +309,55 @@ def _refine_one_roi(
 ) -> Optional[Dict[str, Any]]:
     img_h, img_w = image_rgb.shape[:2]
     x1, y1, x2, y2 = float(yolo_xyxy[0]), float(yolo_xyxy[1]), float(yolo_xyxy[2]), float(yolo_xyxy[3])
-    cx1, cy1, cx2, cy2 = xyxy_to_padded_roi(x1, y1, x2, y2, img_w, img_h, cfg.roi_padding)
+    post_ops = resolve_postprocess(cfg.postprocess_preset, cfg.postprocess)
+    refinement_ops = resolve_refinement_postprocess(cfg.refinement_postprocess)
 
-    crop = image_rgb[cy1:cy2, cx1:cx2]
-    if crop.size == 0:
+    if cfg.multi_scale_refinement:
+        roi_paddings = cfg.multi_scale_roi_paddings or [cfg.roi_padding]
+    else:
+        roi_paddings = [cfg.roi_padding]
+
+    predictions: List[Dict[str, Any]] = []
+    for roi_padding in roi_paddings:
+        pred = _predict_roi_probs(
+            unet_model=unet_model,
+            image_rgb=image_rgb,
+            yolo_xyxy=yolo_xyxy,
+            device=device,
+            mean=mean,
+            std=std,
+            unet_hw=unet_hw,
+            enable_tta=cfg.enable_tta,
+            roi_padding=float(roi_padding),
+        )
+        if pred is not None:
+            predictions.append(pred)
+
+    if not predictions:
         return None
 
-    uh, uw = unet_hw[0], unet_hw[1]
-    crop_resized = cv2.resize(crop, (uw, uh), interpolation=cv2.INTER_LINEAR)
-    crop_tensor = torch.from_numpy(crop_resized).permute(2, 0, 1).float().unsqueeze(0) / 255.0
-    crop_tensor = (crop_tensor.to(device) - mean) / std
+    padded_roi = [
+        float(min(pred["crop_box"][0] for pred in predictions)),
+        float(min(pred["crop_box"][1] for pred in predictions)),
+        float(max(pred["crop_box"][2] for pred in predictions)),
+        float(max(pred["crop_box"][3] for pred in predictions)),
+    ]
 
-    probs = _unet_probs_tta(unet_model, crop_tensor, cfg.enable_tta)
-    crop_h, crop_w = cy2 - cy1, cx2 - cx1
-
-    post_ops = resolve_postprocess(cfg.postprocess_preset, cfg.postprocess)
-
-    if cfg.mask_upscale == "linear_probs":
-        prob_up = cv2.resize(probs.astype(np.float32), (crop_w, crop_h), interpolation=cv2.INTER_LINEAR)
-        m_roi = (prob_up >= cfg.unet_mask_thresh).astype(np.uint8)
-        m_roi = apply_postprocess_chain(m_roi, post_ops)
-    else:
-        m_small = (probs >= cfg.unet_mask_thresh).astype(np.uint8)
+    if (not cfg.multi_scale_refinement) and cfg.mask_upscale != "linear_probs":
+        pred0 = predictions[0]
+        x1r, y1r, x2r, y2r = pred0["crop_box"]
+        crop_h, crop_w = y2r - y1r, x2r - x1r
+        m_small = (pred0["probs_small"] >= cfg.unet_mask_thresh).astype(np.uint8)
         m_roi = cv2.resize(m_small, (crop_w, crop_h), interpolation=cv2.INTER_NEAREST)
-        m_roi = apply_postprocess_chain(m_roi, post_ops)
+        full_mask = np.zeros((img_h, img_w), dtype=np.uint8)
+        full_mask[y1r:y2r, x1r:x2r] = m_roi
+    else:
+        fused_probs_full, padded_roi = _fuse_multiscale_probabilities(predictions, (img_h, img_w), cfg)
+        full_mask = (fused_probs_full >= cfg.unet_mask_thresh).astype(np.uint8)
 
-    full_mask = np.zeros((img_h, img_w), dtype=np.uint8)
-    if crop_h > 0 and crop_w > 0:
-        full_mask[cy1:cy2, cx1:cx2] = (m_roi > 0).astype(np.uint8)
+    full_mask = apply_postprocess_chain(full_mask, post_ops)
+    if refinement_ops:
+        full_mask = apply_postprocess_chain(full_mask, refinement_ops)
 
     if cfg.min_mask_area > 0:
         full_mask = filter_min_area(full_mask, cfg.min_mask_area)
@@ -233,7 +365,7 @@ def _refine_one_roi(
     return {
         "mask": full_mask,
         "yolo_xyxy": [x1, y1, x2, y2],
-        "padded_roi": [float(cx1), float(cy1), float(cx2), float(cy2)],
+        "padded_roi": padded_roi,
         "score": float(score),
     }
 

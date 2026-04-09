@@ -14,6 +14,7 @@ import numpy as np
 
 from combined.config import combined_config_from_dict
 from combined.debug_viz import save_combined_debug_steps
+from experiment_io import get_unet_best_checkpoint_path
 from pipeline_utils import get_device, load_config
 from train_model import build_unet_model, build_yolo_model, load_unet_checkpoint
 
@@ -31,7 +32,7 @@ def main() -> None:
 
     device = get_device()
     yolo_best = SCRIPT_DIR / "checkpoints" / "yolo" / "best.pt"
-    unet_best = SCRIPT_DIR / "checkpoints" / "unet" / "best_model.pth"
+    unet_best = get_unet_best_checkpoint_path(SCRIPT_DIR, config)
     if not yolo_best.exists() or not unet_best.exists():
         print("ERROR: Train YOLO and U-Net++ first (checkpoints missing).")
         sys.exit(1)

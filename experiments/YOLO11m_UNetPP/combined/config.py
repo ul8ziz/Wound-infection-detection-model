@@ -37,6 +37,10 @@ def _default_postprocess() -> List[Dict[str, Any]]:
     return []
 
 
+def _default_multi_scale_paddings() -> List[float]:
+    return [0.0, 0.1, 0.2]
+
+
 @dataclass
 class CombinedInferenceConfig:
     """All tunable combined-pipeline settings (single source of truth)."""
@@ -74,7 +78,15 @@ class CombinedInferenceConfig:
     postprocess_preset: str = "none"
     """Named preset for tuning grid (overrides ``postprocess`` when set from tuner)."""
 
+    refinement_postprocess: str = "none"
+    """Optional extra refinement chain applied after thresholding/postprocess."""
+
     enable_tta: bool = True
+
+    multi_scale_refinement: bool = False
+    multi_scale_roi_paddings: List[float] = field(default_factory=_default_multi_scale_paddings)
+    multi_scale_fusion: str = "mean"
+    multi_scale_weights: List[float] = field(default_factory=list)
 
     debug_save_intermediates: bool = False
     debug_output_dir: str = "results/combined/debug"
@@ -141,7 +153,12 @@ def combined_config_from_dict(config: Dict[str, Any]) -> CombinedInferenceConfig
         min_mask_area=int(c.get("min_mask_area", 0)),
         postprocess=list(postprocess),
         postprocess_preset=str(c.get("postprocess_preset", "none")),
+        refinement_postprocess=str(c.get("refinement_postprocess", "none")),
         enable_tta=bool(c.get("enable_tta", True)),
+        multi_scale_refinement=bool(c.get("multi_scale_refinement", False)),
+        multi_scale_roi_paddings=[float(x) for x in c.get("multi_scale_roi_paddings", [0.0, 0.1, 0.2])],
+        multi_scale_fusion=str(c.get("multi_scale_fusion", "mean")),
+        multi_scale_weights=[float(x) for x in c.get("multi_scale_weights", [])],
         debug_save_intermediates=bool(c.get("debug_save_intermediates", False)),
         debug_output_dir=str(c.get("debug_output_dir", "results/combined/debug")),
         debug_max_images=int(c.get("debug_max_images", 16)),

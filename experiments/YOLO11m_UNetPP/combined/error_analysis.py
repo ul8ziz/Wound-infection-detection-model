@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
+from experiment_io import get_combined_dirs, get_unet_best_checkpoint_path
 from .config import combined_config_from_dict
 from .inference import combined_inference
 
@@ -104,14 +105,15 @@ def run_error_analysis(
     from pipeline_utils import get_device
 
     cfg_inf = combined_config_from_dict(config)
-    out = out_dir or (script_dir / "results" / "combined" / "error_analysis")
+    combined_dirs = get_combined_dirs(script_dir, config)
+    out = out_dir or (combined_dirs["results"] / "error_analysis")
     out.mkdir(parents=True, exist_ok=True)
     qual = out / "qualitative"
     qual.mkdir(exist_ok=True)
 
     device = get_device()
     yolo_best = script_dir / "checkpoints" / "yolo" / "best.pt"
-    unet_best = script_dir / "checkpoints" / "unet" / "best_model.pth"
+    unet_best = get_unet_best_checkpoint_path(script_dir, config)
     if not yolo_best.exists() or not unet_best.exists():
         print("Missing checkpoints.")
         return

@@ -4,6 +4,7 @@
 
 # === General ===
 seed: 42
+experiment_name: null  # set per experiment group to isolate checkpoints/results
 # Main data root: val/test images + labels (unchanged splits)
 data_root: "data/wound_focus_clean"
 # Offline-augmented training set (~4× images). Labels + images under this folder.
@@ -45,13 +46,14 @@ yolo:
 # detail, use e.g. input_size [384, 384], encoder efficientnet-b3, epochs 50,
 # scheduler_T_max 50, early_stop_patience 10 (see README / DOCUMENTATION).
 unet:
+  architecture: "unetplusplus"   # unetplusplus | deeplabv3plus
   encoder: "efficientnet-b1"
   encoder_weights: "imagenet"
   input_size: [384, 384]
   in_channels: 3
   classes: 1
   batch_size: 8
-  epochs: 45
+  epochs: 50
   lr: 0.0001
   weight_decay: 0.0001
   optimizer: "AdamW"
@@ -62,9 +64,28 @@ unet:
   loss_type: "focal_dice"
   loss_bce_weight: 0.4
   loss_dice_weight: 0.6
+  loss_boundary_weight: 0.15     # used by focal_dice_boundary only
+  boundary_kernel_size: 5
   focal_alpha: 0.25
   focal_gamma: 2.0
   roi_padding: 0.12
+  roi_crop_mode: "gt_only"       # gt_only | mixed | yolo_predicted
+  eval_roi_crop_mode: "gt_only"  # keep GT validation by default; combined eval stays YOLO-driven
+  roi_mix_weights:
+    gt: 1.0
+    jitter: 0.0
+    yolo_cached: 0.0
+  roi_jitter:
+    scale_min: 0.9
+    scale_max: 1.1
+    shift_frac: 0.08
+  yolo_roi_cache_path: null      # e.g. results/roi_cache/train_yolo_rois.json
+  eval_yolo_roi_cache_path: null
+  yolo_match_iou_min: 0.05
+  resume_checkpoint: null
+  freeze_encoder: false
+  # Batch-size guidance for resolution sweeps (adjust for your GPU):
+  #   256 -> 16, 384 -> 8, 512 -> 4
   
 # === Combined Inference (YOLO + U-Net++ on full images) ===
 # ``combined.roi_padding`` is independent: expands YOLO boxes at inference only.
@@ -81,7 +102,12 @@ combined:
   min_mask_area: 200
   postprocess_preset: "close_fill"      # none | remove_small_cc | binary_closing | open_close | fill_holes | close_fill
   postprocess: []                  # optional ordered ops; see combined/postprocess.py
+  refinement_postprocess: "none"  # none | boundary_refine | boundary_refine_strong
   enable_tta: false
+  multi_scale_refinement: false
+  multi_scale_roi_paddings: [0.0, 0.12, 0.2]
+  multi_scale_fusion: "mean"      # mean | weighted_mean | stability_select
+  multi_scale_weights: []         # optional weights aligned to multi_scale_roi_paddings
   debug_save_intermediates: false
   debug_output_dir: "results/combined/debug"
   debug_max_images: 16

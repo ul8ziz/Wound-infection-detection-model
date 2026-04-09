@@ -1,0 +1,2 @@
+experiment_name,architecture,input_size,loss_type,roi_crop_mode,multi_scale_refinement,refinement_postprocess,val_best_dice,val_best_epoch,unet_test_dice,unet_test_iou,val_combined_dice,val_combined_iou,val_segm_AP50,val_segm_AP75,test_combined_dice,test_combined_iou,test_segm_AP50,test_segm_AP75,test_combined_AP50,test_combined_AP75,results_dir
+group_A_baseline,unetplusplus,384x384,focal_dice,gt_only,False,none,,,,,,,,,,,,,,,E:\GitHub\Wound-infection-detection-model\experiments\YOLO11m_UNetPP\results\combined\group_A_baseline

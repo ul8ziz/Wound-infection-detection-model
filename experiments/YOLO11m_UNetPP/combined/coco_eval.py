@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+from experiment_io import get_combined_dirs
 from .config import CombinedInferenceConfig, combined_config_from_dict
 from .inference import combined_inference
 
@@ -144,9 +145,13 @@ def evaluate_combined_coco(
         metrics["coco_combined_AP50"] = (
             metrics["coco_bbox_AP50"] + metrics["coco_segm_AP50"]
         ) / 2.0
+    if "coco_bbox_AP75" in metrics and "coco_segm_AP75" in metrics:
+        metrics["coco_combined_AP75"] = (
+            metrics["coco_bbox_AP75"] + metrics["coco_segm_AP75"]
+        ) / 2.0
 
     if write_json:
-        results_dir = script_dir / "results" / "combined"
+        results_dir = get_combined_dirs(script_dir, config)["results"]
         results_dir.mkdir(parents=True, exist_ok=True)
         with open(results_dir / "coco_metrics.json", "w", encoding="utf-8") as f:
             json.dump(metrics, f, indent=2)
