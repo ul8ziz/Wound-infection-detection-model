@@ -1,36 +1,56 @@
 {
-  "best_dice": 0.7743487233494298,
-  "best_epoch": 17,
-  "training_time_s": 882.8511304855347,
+  "best_dice": 0.7772365157826021,
+  "best_epoch": 23,
+  "training_time_s": 1674.2945306301117,
   "test_metrics": {
-    "dice": 0.7795780171973395,
-    "iou": 0.6535469874310806,
-    "pixel_accuracy": 0.8818734658730997,
+    "dice": 0.785281139452095,
+    "iou": 0.6612505366670011,
+    "pixel_accuracy": 0.8886441067532376,
     "n_samples": 74
   },
   "config": {
+    "architecture": "unetplusplus",
     "encoder": "efficientnet-b1",
     "encoder_weights": "imagenet",
     "input_size": [
-      256,
-      256
+      384,
+      384
     ],
     "in_channels": 3,
     "classes": 1,
-    "batch_size": 16,
-    "epochs": 35,
+    "batch_size": 8,
+    "epochs": 50,
     "lr": 0.0001,
     "weight_decay": 0.0001,
     "optimizer": "AdamW",
     "scheduler": "CosineAnnealingLR",
-    "scheduler_T_max": 35,
+    "scheduler_T_max": 45,
     "scheduler_eta_min": 1e-06,
-    "early_stop_patience": 6,
+    "early_stop_patience": 8,
     "loss_type": "focal_dice",
-    "loss_bce_weight": 0.5,
-    "loss_dice_weight": 0.5,
+    "loss_bce_weight": 0.4,
+    "loss_dice_weight": 0.6,
+    "loss_boundary_weight": 0.15,
+    "boundary_kernel_size": 5,
     "focal_alpha": 0.25,
     "focal_gamma": 2.0,
-    "roi_padding": 0.1
+    "roi_padding": 0.12,
+    "roi_crop_mode": "gt_only",
+    "eval_roi_crop_mode": "gt_only",
+    "roi_mix_weights": {
+      "gt": 1.0,
+      "jitter": 0.0,
+      "yolo_cached": 0.0
+    },
+    "roi_jitter": {
+      "scale_min": 0.9,
+      "scale_max": 1.1,
+      "shift_frac": 0.08
+    },
+    "yolo_roi_cache_path": null,
+    "eval_yolo_roi_cache_path": null,
+    "yolo_match_iou_min": 0.05,
+    "resume_checkpoint": null,
+    "freeze_encoder": false
   }
 }

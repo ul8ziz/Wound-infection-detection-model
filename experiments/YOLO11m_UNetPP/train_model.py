@@ -1490,8 +1490,16 @@ def predict_single_image(
             (0, 255, 0),
             2,
         )
-        cv2.putText(overlay, f"{score:.2f}", (box[0], box[1] - 5),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        text_org = (int(box[0]), max(0, int(box[1]) - 5))
+        cv2.putText(
+            overlay,
+            f"{score:.2f}",
+            text_org,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 255, 0),
+            1,
+        )
 
     effective_ppcm = pred.get("pixels_per_cm") or pixels_per_cm
     area_cm2 = calculate_wound_area(combined_mask, effective_ppcm)
