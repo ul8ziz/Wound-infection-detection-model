@@ -31,13 +31,13 @@
     "combined_AP50": 0.7394644772721375
   },
   "unet": {
-    "best_dice": 0.7757628615061752,
-    "best_epoch": 19,
-    "training_time_s": 1657.2760934829712,
+    "best_dice": 0.7497151099618985,
+    "best_epoch": 1,
+    "training_time_s": 5586.09739279747,
     "test_metrics": {
-      "dice": 0.7836785381136959,
-      "iou": 0.6605868748943102,
-      "pixel_accuracy": 0.8878907899598818,
+      "dice": 0.3376015073644368,
+      "iou": 0.28678725598485666,
+      "pixel_accuracy": 0.8989338459553305,
       "n_samples": 74
     },
     "config": {
@@ -52,7 +52,7 @@
       "classes": 1,
       "batch_size": 8,
       "epochs": 50,
-      "lr": 0.0001,
+      "lr": 5e-05,
       "weight_decay": 0.0001,
       "optimizer": "AdamW",
       "scheduler": "CosineAnnealingLR",
@@ -67,42 +67,42 @@
       "focal_alpha": 0.25,
       "focal_gamma": 2.0,
       "roi_padding": 0.12,
-      "roi_crop_mode": "gt_only",
-      "eval_roi_crop_mode": "gt_only",
+      "roi_crop_mode": "mixed",
+      "eval_roi_crop_mode": "yolo_predicted",
       "roi_mix_weights": {
-        "gt": 1.0,
-        "jitter": 0.0,
-        "yolo_cached": 0.0
+        "gt": 0.45,
+        "jitter": 0.30,
+        "yolo_cached": 0.25
       },
       "roi_jitter": {
-        "scale_min": 0.9,
-        "scale_max": 1.1,
-        "shift_frac": 0.08
+        "scale_min": 0.85,
+        "scale_max": 1.15,
+        "shift_frac": 0.10
       },
-      "yolo_roi_cache_path": null,
-      "eval_yolo_roi_cache_path": null,
+      "yolo_roi_cache_path": "experiments/YOLO11m_UNetPP/results/roi_cache/train_yolo_rois.json",
+      "eval_yolo_roi_cache_path": "experiments/YOLO11m_UNetPP/results/roi_cache/val_yolo_rois.json",
       "yolo_match_iou_min": 0.05,
       "resume_checkpoint": null,
       "freeze_encoder": false
     }
   },
   "combined": {
-    "mean_dice": 0.6694928697639307,
-    "mean_iou": 0.5490610143723371,
-    "mean_dice_conditional": 0.6818908858706701,
-    "mean_iou_conditional": 0.5592288109347878,
+    "mean_dice": 0.6760588689047324,
+    "mean_iou": 0.5543391918040168,
+    "mean_dice_conditional": 0.6885784775881534,
+    "mean_iou_conditional": 0.56460473239298,
     "n_images_total": 55,
     "n_images_evaluated": 54,
     "n_images_missed": 1,
     "n_predictions_saved": 8,
-    "coco_bbox_AP": 0.4805462958206544,
-    "coco_bbox_AP50": 0.7501815919575405,
-    "coco_bbox_AP75": 0.5222656302384545,
-    "coco_segm_AP": 0.1984375086895963,
-    "coco_segm_AP50": 0.561053652319715,
-    "coco_segm_AP75": 0.09908720253309644,
-    "coco_combined_AP50": 0.6556176221386278,
-    "coco_combined_AP75": 0.3106764163857755
+    "coco_bbox_AP": 0.48489754115446465,
+    "coco_bbox_AP50": 0.7388751361802459,
+    "coco_bbox_AP75": 0.5428071736949766,
+    "coco_segm_AP": 0.20332608322765422,
+    "coco_segm_AP50": 0.5814424082749386,
+    "coco_segm_AP75": 0.10502861624679258,
+    "coco_combined_AP50": 0.6601587722275923,
+    "coco_combined_AP75": 0.3239178949708846
   },
   "config": {
     "seed": 42,
@@ -165,20 +165,20 @@
       "focal_alpha": 0.25,
       "focal_gamma": 2.0,
       "roi_padding": 0.12,
-      "roi_crop_mode": "gt_only",
-      "eval_roi_crop_mode": "gt_only",
+      "roi_crop_mode": "mixed",
+      "eval_roi_crop_mode": "yolo_predicted",
       "roi_mix_weights": {
-        "gt": 1.0,
-        "jitter": 0.0,
-        "yolo_cached": 0.0
+        "gt": 0.45,
+        "jitter": 0.30,
+        "yolo_cached": 0.25
       },
       "roi_jitter": {
-        "scale_min": 0.9,
-        "scale_max": 1.1,
-        "shift_frac": 0.08
+        "scale_min": 0.85,
+        "scale_max": 1.15,
+        "shift_frac": 0.10
       },
-      "yolo_roi_cache_path": null,
-      "eval_yolo_roi_cache_path": null,
+      "yolo_roi_cache_path": "experiments/YOLO11m_UNetPP/results/roi_cache/train_yolo_rois.json",
+      "eval_yolo_roi_cache_path": "experiments/YOLO11m_UNetPP/results/roi_cache/val_yolo_rois.json",
       "yolo_match_iou_min": 0.05,
       "resume_checkpoint": null,
       "freeze_encoder": false
@@ -222,5 +222,5 @@
     },
     "_config_path": "E:\\GitHub\\Wound-infection-detection-model\\experiments\\YOLO11m_UNetPP\\config.yaml"
   },
-  "timestamp": "2026-04-09T21:12:57.104194"
+  "timestamp": "2026-04-10T05:30:00.000000"
 }

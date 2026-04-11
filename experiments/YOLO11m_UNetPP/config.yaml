@@ -69,18 +69,18 @@ unet:
   focal_alpha: 0.25
   focal_gamma: 2.0
   roi_padding: 0.12
-  roi_crop_mode: "gt_only"       # gt_only | mixed | yolo_predicted
-  eval_roi_crop_mode: "gt_only"  # keep GT validation by default; combined eval stays YOLO-driven
+  roi_crop_mode: "mixed"          # gt_only | mixed | yolo_predicted
+  eval_roi_crop_mode: "yolo_predicted"  # realistic YOLO-driven validation (matches inference)
   roi_mix_weights:
-    gt: 1.0
-    jitter: 0.0
-    yolo_cached: 0.0
+    gt: 0.45
+    jitter: 0.30
+    yolo_cached: 0.25
   roi_jitter:
-    scale_min: 0.9
-    scale_max: 1.1
-    shift_frac: 0.08
-  yolo_roi_cache_path: null      # e.g. results/roi_cache/train_yolo_rois.json
-  eval_yolo_roi_cache_path: null
+    scale_min: 0.85
+    scale_max: 1.15
+    shift_frac: 0.10
+  yolo_roi_cache_path: "experiments/YOLO11m_UNetPP/results/roi_cache/train_yolo_rois.json"
+  eval_yolo_roi_cache_path: "experiments/YOLO11m_UNetPP/results/roi_cache/val_yolo_rois.json"
   yolo_match_iou_min: 0.05
   resume_checkpoint: null
   freeze_encoder: false

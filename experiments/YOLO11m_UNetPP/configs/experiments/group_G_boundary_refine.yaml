@@ -17,6 +17,8 @@ unet:
   loss_type: "focal_dice_boundary"
   loss_boundary_weight: 0.15
   boundary_kernel_size: 5
+  resume_checkpoint: "experiments/YOLO11m_UNetPP/checkpoints/unet/group_D_boundary_loss/best_model.pth"
+  lr: 0.00005
 combined:
   multi_scale_refinement: true
   multi_scale_roi_paddings: [0.0, 0.12, 0.2]

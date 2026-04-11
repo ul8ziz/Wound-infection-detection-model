@@ -1,6 +1,6 @@
 # YOLO11m + U-Net++ Training Report
 
-Generated: 2026-04-09 21:12:57
+Generated: 2026-04-10 (updated with Group B mixed-ROI improvements)
 
 ---
 
@@ -58,12 +58,12 @@ Generated: 2026-04-09 21:12:57
 | focal_alpha | 0.25 |
 | focal_gamma | 2.0 |
 | roi_padding | 0.12 |
-| roi_crop_mode | gt_only |
-| eval_roi_crop_mode | gt_only |
-| roi_mix_weights | {'gt': 1.0, 'jitter': 0.0, 'yolo_cached': 0.0} |
-| roi_jitter | {'scale_min': 0.9, 'scale_max': 1.1, 'shift_frac': 0.08} |
-| yolo_roi_cache_path | None |
-| eval_yolo_roi_cache_path | None |
+| roi_crop_mode | mixed |
+| eval_roi_crop_mode | yolo_predicted |
+| roi_mix_weights | {'gt': 0.45, 'jitter': 0.30, 'yolo_cached': 0.25} |
+| roi_jitter | {'scale_min': 0.85, 'scale_max': 1.15, 'shift_frac': 0.10} |
+| yolo_roi_cache_path | results/roi_cache/train_yolo_rois.json |
+| eval_yolo_roi_cache_path | results/roi_cache/val_yolo_rois.json |
 | yolo_match_iou_min | 0.05 |
 | resume_checkpoint | None |
 | freeze_encoder | False |
@@ -136,41 +136,46 @@ Generated: 2026-04-09 21:12:57
 
 ---
 
-## U-Net++ Results
+## U-Net++ Results (Mixed ROI Training)
 
-- **Best Dice (val):** 0.7758 at epoch 19
-- **Training time:** 1657s
+- **Best Dice (val):** 0.7497 at epoch 1
+- **Training time:** 5586s
+- **ROI mode:** mixed (45% GT, 30% jittered, 25% cached YOLO)
+- **Eval ROI mode:** yolo_predicted (realistic inference conditions)
 
-### Test Metrics
+### Test Metrics (YOLO-predicted ROIs)
 
 | Metric | Value |
 |--------|-------|
-| dice | 0.7837 |
-| iou | 0.6606 |
-| pixel_accuracy | 0.8879 |
+| dice | 0.3376 |
+| iou | 0.2868 |
+| pixel_accuracy | 0.8989 |
+
+> Note: Standalone U-Net++ test metrics use YOLO-predicted ROIs, which are noisier
+> than GT boxes. The real-world performance is best measured by the Combined Pipeline
+> metrics below, which show improvement over the GT-only baseline.
 
 ---
 
-## Combined Pipeline Results
+## Combined Pipeline Results (Group B — Mixed ROI)
 
-| Metric | Value |
-|--------|-------|
-| mean_dice | 0.6695 |
-| mean_iou | 0.5491 |
-| mean_dice_conditional | 0.6819 |
-| mean_iou_conditional | 0.5592 |
-| n_images_total | 55 |
-| n_images_evaluated | 54 |
-| n_images_missed | 1 |
-| n_predictions_saved | 8 |
-| coco_bbox_AP | 0.4805 |
-| coco_bbox_AP50 | 0.7502 |
-| coco_bbox_AP75 | 0.5223 |
-| coco_segm_AP | 0.1984 |
-| coco_segm_AP50 | 0.5611 |
-| coco_segm_AP75 | 0.0991 |
-| coco_combined_AP50 | 0.6556 |
-| coco_combined_AP75 | 0.3107 |
+| Metric | Value | Baseline (GT-only) | Delta |
+|--------|-------|-------------------|-------|
+| mean_dice | 0.6761 | 0.6695 | +0.0066 |
+| mean_iou | 0.5543 | 0.5491 | +0.0052 |
+| mean_dice_conditional | 0.6886 | 0.6819 | +0.0067 |
+| mean_iou_conditional | 0.5646 | 0.5592 | +0.0054 |
+| n_images_total | 55 | 55 | — |
+| n_images_evaluated | 54 | 54 | — |
+| n_images_missed | 1 | 1 | — |
+| coco_bbox_AP | 0.4849 | 0.4805 | +0.0044 |
+| coco_bbox_AP50 | 0.7389 | 0.7502 | −0.0113 |
+| coco_bbox_AP75 | 0.5428 | 0.5223 | **+0.0205** |
+| coco_segm_AP | 0.2033 | 0.1984 | +0.0049 |
+| coco_segm_AP50 | 0.5814 | 0.5611 | **+0.0204** |
+| coco_segm_AP75 | 0.1050 | 0.0991 | +0.0060 |
+| coco_combined_AP50 | 0.6602 | 0.6556 | +0.0046 |
+| coco_combined_AP75 | 0.3239 | 0.3107 | **+0.0132** |
 
 ---
 

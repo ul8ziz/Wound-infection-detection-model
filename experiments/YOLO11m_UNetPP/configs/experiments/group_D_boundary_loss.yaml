@@ -17,5 +17,5 @@ unet:
   loss_type: "focal_dice_boundary"
   loss_boundary_weight: 0.15
   boundary_kernel_size: 5
-  resume_checkpoint: "experiments/YOLO11m_UNetPP/checkpoints/unet/group_C_res384/best_model.pth"
+  resume_checkpoint: "experiments/YOLO11m_UNetPP/checkpoints/unet/group_B_yolo_like_crops/best_model.pth"
   lr: 0.00005

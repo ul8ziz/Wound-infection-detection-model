@@ -1,11 +1,11 @@
 {
-  "best_dice": 0.7497151099618985,
-  "best_epoch": 1,
-  "training_time_s": 5586.09739279747,
+  "best_dice": 0.7757628615061752,
+  "best_epoch": 19,
+  "training_time_s": 1657.2760934829712,
   "test_metrics": {
-    "dice": 0.3376015073644368,
-    "iou": 0.28678725598485666,
-    "pixel_accuracy": 0.8989338459553305,
+    "dice": 0.7836785381136959,
+    "iou": 0.6605868748943102,
+    "pixel_accuracy": 0.8878907899598818,
     "n_samples": 74
   },
   "config": {
@@ -20,7 +20,7 @@
     "classes": 1,
     "batch_size": 8,
     "epochs": 50,
-    "lr": 5e-05,
+    "lr": 0.0001,
     "weight_decay": 0.0001,
     "optimizer": "AdamW",
     "scheduler": "CosineAnnealingLR",
@@ -35,22 +35,22 @@
     "focal_alpha": 0.25,
     "focal_gamma": 2.0,
     "roi_padding": 0.12,
-    "roi_crop_mode": "mixed",
-    "eval_roi_crop_mode": "yolo_predicted",
+    "roi_crop_mode": "gt_only",
+    "eval_roi_crop_mode": "gt_only",
     "roi_mix_weights": {
-      "gt": 0.45,
-      "jitter": 0.3,
-      "yolo_cached": 0.25
+      "gt": 1.0,
+      "jitter": 0.0,
+      "yolo_cached": 0.0
     },
     "roi_jitter": {
-      "scale_min": 0.85,
-      "scale_max": 1.15,
-      "shift_frac": 0.1
+      "scale_min": 0.9,
+      "scale_max": 1.1,
+      "shift_frac": 0.08
     },
-    "yolo_roi_cache_path": "experiments/YOLO11m_UNetPP/results/roi_cache/train_yolo_rois.json",
-    "eval_yolo_roi_cache_path": "experiments/YOLO11m_UNetPP/results/roi_cache/val_yolo_rois.json",
+    "yolo_roi_cache_path": null,
+    "eval_yolo_roi_cache_path": null,
     "yolo_match_iou_min": 0.05,
-    "resume_checkpoint": "E:\\GitHub\\Wound-infection-detection-model\\experiments\\YOLO11m_UNetPP\\checkpoints\\unet\\group_B_yolo_like_crops\\last_checkpoint.pth",
+    "resume_checkpoint": null,
     "freeze_encoder": false
   }
 }

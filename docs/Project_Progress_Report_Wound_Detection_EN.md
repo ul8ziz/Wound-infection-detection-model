@@ -1,232 +1,308 @@
-# Project Progress Report: Postoperative Wound Detection and Segmentation
+# Postoperative Wound Detection & Segmentation — Progress Report
 
-## 1. Executive Summary
+---
 
-This project builds a two-stage wound detection and segmentation pipeline from postoperative clinical photographs. A scattered CVAT export (531 raw images, 241 tasks) was cleaned into a standardized wound-only dataset of 380 images (369 with wound annotations, 532 total annotations). Experiments progressed from a Mask R-CNN baseline to a YOLO11m-seg + U-Net++ hybrid pipeline with systematic optimization.
+## 0. Introduction
 
-**Key results (test set, April 2026):**
+This project develops a deep-learning pipeline for detecting and segmenting postoperative wounds from clinical photographs, as part of a Master's thesis on wound infection analysis.
 
-| Pipeline | bbox AP50 | bbox AP75 | segm AP50 | segm AP75 | Dice | IoU |
-|------|------:|------:|------:|------:|------:|------:|
-| Mask R-CNN baseline | 0.3981 | 0.0625 | 0.2170 | 0.0076 | — | — |
-| YOLO11m-seg standalone | **0.8169** | — | **0.6620** | — | — | — |
-| U-Net++ ROI (test) | — | — | — | — | 0.7837 | 0.6606 |
-| Combined (before tuning) | 0.5981 | 0.0124 | 0.5794 | 0.0422 | 0.7076 | 0.5780 |
-| **Combined (final tuned)** | **0.7502** | **0.5223** | **0.5611** | **0.0991** | **0.6695** | **0.5491** |
+**Two main experiments** were conducted on a curated wound-only dataset (380 images, 532 wound annotations):
 
-The optimization cycle improved `bbox_AP75` by 42x (0.0124 → 0.5223). Error analysis identifies `shifted_roi_or_mask` as the dominant remaining failure mode.
+| Experiment | Architecture | Approach |
+|------------|-------------|----------|
+| **Experiment 1** | Mask R-CNN (ResNet-50-FPN) | Single-stage instance segmentation |
+| **Experiment 2** | YOLO11m-seg + U-Net++ | Two-stage: detection then ROI refinement |
 
-## 2. Dataset
+**Best overall results (test set):**
 
-### 2.1 Raw to Clean Pipeline
+| Metric | Mask R-CNN | YOLO11m-seg (standalone) | Combined pipeline (tuned) |
+|--------|----------:|-------------------------:|-------------------------:|
+| bbox AP50 | 0.398 | **0.817** | 0.750 |
+| bbox AP75 | 0.063 | — | **0.522** |
+| segm AP50 | 0.217 | **0.662** | 0.561 |
+| Dice | — | — | 0.670 |
 
-| Stage | Count |
-|------|------:|
-| Raw images processed | 531 |
-| Valid standardized images | 380 |
-| Ambiguous (excluded) | 150 |
-| Images with wound annotations | 369 |
-| Total wound annotations | 532 |
-| Infected / Non-infected | 158 / 222 |
+The YOLO11m-seg + U-Net++ pipeline outperformed Mask R-CNN on every metric. The combined pipeline's optimization cycle improved bbox precision at IoU 0.75 by **42x** (from 0.012 to 0.522).
 
-### 2.2 Splits
+---
 
-| Split | Total images | Wound-only images |
-|------|------:|------:|
-| Train | 266 | 257 |
-| Validation | 57 | 57 |
-| Test | 57 | 55 |
+## 1. Problems Encountered and Solutions
 
-Filename convention: `task_{id:03d}_img_{global:06d}_{infection_label}.jpg`
-Infection labels inferred from naming heuristic (`-not-` → not_infected).
-Offline 4x augmentation expands training to ~1028 images.
+### 1.1 Dataset Problems
 
-## 3. Architecture
+| Problem | Impact | Solution |
+|---------|--------|----------|
+| **Inconsistent filenames** across 241 CVAT task folders | Could not merge data reliably | Built a standardization pipeline: `task_{id}_img_{global}_{label}.jpg` with full mapping CSV |
+| **No explicit infection labels** | Needed for classification task | Inferred from filename heuristic (`-not-` = not infected); excluded 150 ambiguous cases |
+| **Weak annotation quality** for fine-grained classes (edema, necrosis, fibrin, etc.) | Multi-class segmentation was unreliable | Narrowed scope to **wound-only** segmentation — the only class with consistent annotations |
+| **Small dataset** (369 wound images) | Risk of overfitting | Applied offline 4x augmentation (→ ~1028 training images) + online medical augmentation |
 
-**Stage 1 — YOLO11m-seg:** Full-image wound detection and coarse segmentation.
-**Stage 2 — U-Net++:** ROI-based mask refinement on YOLO-proposed crops.
-**Combined inference:** YOLO proposals → padded ROI crop → U-Net++ refinement → mask upscale → morphological postprocessing.
+### 1.2 Technical Problems
 
-## 4. Training Configuration
+| Problem | Impact | Solution |
+|---------|--------|----------|
+| **ROI padding mismatch** — U-Net++ trained with `roi_padding=0.12` but inference used 0.10 | Distribution shift: degraded mask quality at inference | Aligned to 0.12 everywhere |
+| **Bounding box mode** — `padded_roi` generated boxes from the padded ROI crop, not the actual mask | Extremely loose bboxes → `bbox_AP75 = 0.012` | Switched to `mask_tight` mode: bbox derived from predicted mask contour |
+| **Mask holes and noise** in U-Net++ output | Lower Dice/IoU and poor visual quality | Added `close_fill` morphological postprocessing |
+| **Missed detections at high confidence thresholds** | Some wounds scored 0.2–0.5, missed by default YOLO conf=0.5 | Combined pipeline uses two-stage filtering: YOLO at conf=0.001, then Python filter at 0.20 |
+| **Evaluation excluded missed images** — pre-optimization Dice was computed on 51/55 images only | Metrics were misleadingly high | Fixed evaluation to include all 55 images (missed = Dice 0) |
 
-| Parameter | YOLO11m-seg | U-Net++ |
-|-----------|-------------|---------|
-| Input size | 768 | 384 × 384 |
-| Encoder | — | EfficientNet-B1 (ImageNet) |
-| Batch size | 4 | 8 |
-| Epochs | 60 | 50 |
-| Optimizer | SGD (lr=0.01) | AdamW (lr=1e-4) |
-| Scheduler | — | CosineAnnealingLR (T_max=45) |
-| Loss | default | focal-dice (α=0.25, γ=2.0) |
-| ROI padding | — | 0.12 |
-| Training time | ~67 min | ~28 min |
+### 1.3 Impact Summary
 
-**Combined inference config:**
+After solving these problems, the combined pipeline achieved:
+- `bbox_AP75`: 0.012 → **0.522** (42x improvement)
+- `segm_AP75`: 0.042 → **0.099** (2.3x improvement)
+- Missed images: 4 → **1**
 
-| Parameter | Value |
-|-----------|-------|
-| yolo_conf_thresh | 0.20 |
-| unet_mask_thresh | 0.35 |
-| roi_padding | 0.12 |
-| postprocess_preset | close_fill |
-| coco_bbox_mode | mask_tight |
-| enable_tta | false |
+---
 
-## 5. Results
+## 2. Technologies Used
 
-### 5.1 Mask R-CNN Baseline (ResNet-50-FPN, 512×512, 50 epochs)
+### 2.1 Why These Architectures
 
-| Metric | Test |
-|------|------:|
-| bbox_AP50 | 0.3981 |
-| bbox_AP75 | 0.0625 |
-| segm_AP50 | 0.2170 |
-| segm_AP75 | 0.0076 |
-| Training time | ~53 min |
+| Technology | Role | Why chosen |
+|------------|------|------------|
+| **Mask R-CNN** (ResNet-50-FPN) | Experiment 1: baseline | Industry-standard instance segmentation model; well-documented; establishes a reliable comparison baseline |
+| **YOLO11m-seg** | Experiment 2, Stage 1: detection + coarse segmentation | State-of-the-art real-time detector with built-in segmentation head; significantly faster and more accurate than Mask R-CNN for wound localization |
+| **U-Net++** (EfficientNet-B1) | Experiment 2, Stage 2: mask refinement | U-shaped architecture excels at fine boundary segmentation; operates on cropped ROI for higher effective resolution; EfficientNet encoder provides strong features with moderate size |
 
-### 5.2 YOLO11m-seg Standalone
+### 2.2 Why a Two-Stage Pipeline
 
-| Metric | Validation | Test |
-|------|------:|------:|
-| bbox mAP50 | 0.8591 | 0.8169 |
-| bbox mAP50-95 | 0.5163 | 0.5387 |
-| segm mAP50 | 0.7183 | 0.6620 |
-| segm mAP50-95 | 0.2601 | 0.2503 |
-| combined AP50 | — | 0.7395 |
+A single model must balance between localizing the wound in the full image and producing precise pixel-level boundaries. The two-stage design separates these concerns:
 
-### 5.3 U-Net++ ROI Refinement
+1. **YOLO11m-seg** processes the full image (768px) to detect wound regions — optimized for localization.
+2. **U-Net++** processes only the cropped wound ROI (384×384) — optimized for boundary precision.
+
+This division allows each model to focus on its strength.
+
+### 2.3 Supporting Technologies
+
+| Technology | Purpose |
+|------------|---------|
+| **PyTorch** | Deep learning framework |
+| **Ultralytics** | YOLO11m-seg training and inference |
+| **Segmentation Models PyTorch (SMP)** | U-Net++ implementation |
+| **Albumentations** | Medical-safe augmentation (avoids destroying marker geometry) |
+| **COCO API (pycocotools)** | Standardized AP evaluation |
+| **Focal-Dice Loss** | Handles class imbalance (wound vs background) better than BCE alone |
+| **CosineAnnealingLR** | Smooth learning rate decay for U-Net++ training |
+| **Morphological postprocessing** | Fills holes, smooths mask boundaries |
+
+---
+
+## 3. Comparison Between Experiments
+
+### 3.1 Configuration Comparison
+
+| Parameter | Mask R-CNN | YOLO11m-seg + U-Net++ |
+|-----------|----------:|----------------------:|
+| Detection model | Mask R-CNN (ResNet-50-FPN) | YOLO11m-seg |
+| Refinement model | — | U-Net++ (EfficientNet-B1) |
+| Input size (detection) | 512 × 512 | 768 |
+| Input size (refinement) | — | 384 × 384 |
+| Batch size | 2 | 4 (YOLO) / 8 (U-Net++) |
+| Epochs | 50 | 60 (YOLO) / 50 (U-Net++) |
+| Optimizer | SGD (lr=0.001) | SGD (YOLO) / AdamW (U-Net++) |
+| Loss | default | default (YOLO) / focal-dice (U-Net++) |
+| Training time | ~53 min | ~67 min + ~28 min = ~95 min |
+| Total parameters | ~44M | ~20M + ~8M = ~28M |
+
+### 3.2 Test Metrics Comparison
+
+| Metric | Mask R-CNN | YOLO standalone | Combined (tuned) | Winner |
+|--------|----------:|-----------:|-----------:|--------|
+| bbox AP | 0.152 | — | **0.481** | Combined |
+| bbox AP50 | 0.398 | **0.817** | 0.750 | YOLO |
+| bbox AP75 | 0.063 | — | **0.522** | Combined |
+| segm AP | 0.058 | — | **0.198** | Combined |
+| segm AP50 | 0.217 | **0.662** | 0.561 | YOLO |
+| segm AP75 | 0.008 | — | **0.099** | Combined |
+| combined AP50 | 0.308 | 0.739 | **0.656** | YOLO |
+| Dice | — | — | **0.670** | Combined |
+| IoU | — | — | **0.549** | Combined |
+
+### 3.3 Key Findings
+
+1. **YOLO11m-seg more than doubled Mask R-CNN's detection performance** — bbox AP50 jumped from 0.398 to 0.817 (+105%).
+2. **Segmentation tripled** — segm AP50 from 0.217 to 0.662 (+205%).
+3. **The combined pipeline added precision at high IoU** — bbox AP75 of 0.522 is the strongest metric in the project (Mask R-CNN achieved only 0.063).
+4. **Mask R-CNN's main weakness:** low-resolution input (512px) and no dedicated refinement stage led to poor boundary quality (`segm_AP75 = 0.008`).
+5. **Combined pipeline's remaining weakness:** `segm_AP75 = 0.099` is still low, primarily caused by ROI-to-mask alignment errors in 33% of test images.
+
+---
+
+## 4. Detailed Experiment Results
+
+### 4.1 Experiment 1: Mask R-CNN
+
+**Architecture:** Mask R-CNN, ResNet-50-FPN, `num_classes=2` (background + wound).
+**Input:** 512 × 512, batch size 2, 50 epochs, SGD lr=0.001, moderate medical augmentation.
+**Best validation epoch:** 13 (`combined_AP50 = 0.417`).
+
+**Test results:**
 
 | Metric | Value |
 |------|------:|
-| Best val Dice | 0.7758 (epoch 19) |
-| Test Dice | 0.7837 |
-| Test IoU | 0.6606 |
-| Test pixel accuracy | 0.8879 |
+| bbox_AP50 | 0.398 |
+| bbox_AP75 | 0.063 |
+| segm_AP50 | 0.217 |
+| segm_AP75 | 0.008 |
+| combined_AP50 | 0.308 |
+| Training time | 3207 s (~53 min) |
 
-### 5.4 Combined Pipeline — Before vs After Optimization
+This model served as a functional baseline. It proved the dataset and pipeline work end-to-end, but its low segmentation metrics confirmed that a stronger architecture was needed.
 
-| Metric | Before | After | Change |
-|------|------:|------:|------|
-| coco_bbox_AP50 | 0.5981 | **0.7502** | +25% |
-| coco_bbox_AP75 | 0.0124 | **0.5223** | **×42** |
-| coco_segm_AP50 | 0.5794 | **0.5611** | −3% |
-| coco_segm_AP75 | 0.0422 | **0.0991** | ×2.3 |
-| coco_combined_AP50 | 0.5888 | **0.6556** | +11% |
-| mean_dice | 0.7076 | **0.6695** | * |
-| mean_iou | 0.5780 | **0.5491** | * |
-| Images missed | 4 | **1** | −75% |
+### 4.2 Experiment 2: YOLO11m-seg + U-Net++
 
-\* Dice/IoU decreased because missed images are now correctly counted (54/55 vs 51/55).
+#### Stage 1 — YOLO11m-seg (detection + coarse segmentation)
 
-**Key fixes that drove improvement:**
-1. ROI padding aligned (0.12 train = 0.12 inference)
-2. `mask_tight` bbox mode instead of `padded_roi`
-3. `close_fill` morphological postprocessing
-4. Systematic threshold grid search
+**Input:** 768px, batch 4, 60 epochs, SGD, 4x offline augmentation (~1028 images).
 
-## 6. Error Analysis (Test Split)
+| Metric | Validation | Test |
+|------|------:|------:|
+| bbox precision | 0.897 | — |
+| bbox recall | 0.820 | — |
+| bbox mAP50 | 0.859 | **0.817** |
+| bbox mAP50-95 | 0.516 | **0.539** |
+| segm mAP50 | 0.718 | **0.662** |
+| segm mAP50-95 | 0.260 | **0.250** |
 
-| Error category | Count |
+#### Stage 2 — U-Net++ (ROI mask refinement)
+
+**Input:** 384 × 384 ROI crops, EfficientNet-B1, AdamW, focal-dice loss, 50 epochs.
+
+| Metric | Value |
 |------|------:|
-| ok_or_minor | 27 |
-| shifted_roi_or_mask | 18 |
-| over_segmentation | 9 |
-| fragmented_mask | 8 |
-| poor_bbox_localization | 8 |
-| boundary_or_alignment_error | 6 |
-| missed_detection | 3 |
-| moderate_bbox_iou | 2 |
+| Best val Dice | 0.776 (epoch 19) |
+| Test Dice | **0.784** |
+| Test IoU | **0.661** |
+| Test pixel accuracy | **0.888** |
+| Training time | 1657 s (~28 min) |
 
-Primary bottleneck: `shifted_roi_or_mask` (33% of test images).
+#### Combined Pipeline — Final Tuned Results
 
-## 7. Current Limitations
+**Config:** `yolo_conf_thresh=0.20`, `unet_mask_thresh=0.35`, `roi_padding=0.12`, `close_fill` postprocessing, `mask_tight` bbox mode.
 
-1. `segm_AP75 = 0.0991` remains weak (bbox_AP75 is 0.5223).
-2. Infection classifier not re-evaluated on a named split.
-3. Marker-based area estimation uses static `pixels_per_cm = 26.0`; dynamic calibration requires retraining with wound+marker classes.
-4. Segmentation experiment groups B–G not yet executed.
+| Metric | Before optimization | After optimization | Improvement |
+|------|------:|------:|------|
+| coco_bbox_AP | 0.171 | **0.481** | ×2.8 |
+| coco_bbox_AP50 | 0.598 | **0.750** | +25% |
+| coco_bbox_AP75 | 0.012 | **0.522** | **×42** |
+| coco_segm_AP | 0.189 | **0.198** | +5% |
+| coco_segm_AP50 | 0.579 | **0.561** | −3% |
+| coco_segm_AP75 | 0.042 | **0.099** | ×2.3 |
+| combined_AP50 | 0.589 | **0.656** | +11% |
+| mean_dice | 0.708 | **0.670** | corrected eval |
+| Images evaluated | 51/55 | **54/55** | +3 recovered |
 
-## 8. Next Steps
+### 4.3 Error Analysis (Test Split, Combined Pipeline)
 
-1. Run segmentation experiment groups B–G (YOLO-like crops, higher resolution, boundary loss, DeepLabV3+).
-2. Freeze final thesis pipeline.
-3. Re-train infection classifier with explicit split evaluation.
-4. If marker-based area is in scope, retrain with `classes: ["wound", "marker"]`.
+| Error category | Count | % |
+|------|------:|------:|
+| ok_or_minor | 27 | 49% |
+| shifted_roi_or_mask | 18 | 33% |
+| over_segmentation | 9 | 16% |
+| fragmented_mask | 8 | 15% |
+| poor_bbox_localization | 8 | 15% |
+| boundary_or_alignment | 6 | 11% |
+| missed_detection | 3 | 5% |
 
-## 9. Figures
+---
 
-### 9.1 Combined training curves — YOLO + U-Net++
+## 5. Training Plots and Figures
 
-**Figure 1 — Training overview (4-panel).**
+### 5.1 Combined Training Overview
 
-![YOLO mAP/losses + U-Net++ loss/metrics over training.](../experiments/YOLO11m_UNetPP/results/training_curves_combined.png)
+**Figure 1 — YOLO + U-Net++ training curves (4-panel).**
+Top: YOLO mAP curves and loss over 60 epochs. Bottom: U-Net++ loss and Dice/IoU over training.
 
-### 9.2 YOLO11m-seg detailed metrics
+![Combined training overview.](../experiments/YOLO11m_UNetPP/results/training_curves_combined.png)
 
-**Figure 2 — YOLO precision, recall, losses, mAP over epochs.**
+### 5.2 YOLO11m-seg Metrics
 
-![Four-panel YOLO training metrics.](../experiments/YOLO11m_UNetPP/results/yolo/yolo_metrics_combined.png)
+**Figure 2 — YOLO precision, recall, validation losses, and mAP.**
+Shows box and mask precision/recall converging, validation losses plateauing, and mAP50 peaking around epoch 50–60.
 
-**Figure 3 — YOLO normalized confusion matrix.**
+![YOLO detailed metrics.](../experiments/YOLO11m_UNetPP/results/yolo/yolo_metrics_combined.png)
 
-![Normalized confusion matrix.](../experiments/YOLO11m_UNetPP/results/yolo/confusion_matrix_normalized.png)
+**Figure 3 — YOLO confusion matrix (normalized).**
+Shows wound class detection accuracy versus background false positives.
 
-### 9.3 U-Net++ ROI refinement
+![YOLO confusion matrix.](../experiments/YOLO11m_UNetPP/results/yolo/confusion_matrix_normalized.png)
 
-**Figure 4 — U-Net++ loss, Dice, IoU over epochs.**
+**Figure 4 — YOLO results strip (Ultralytics).**
+Standard Ultralytics summary of all training metrics in a single plot.
 
-![Four-panel U-Net++ training history.](../experiments/YOLO11m_UNetPP/results/unet/unet_metrics_combined.png)
+![YOLO results strip.](../experiments/YOLO11m_UNetPP/results/yolo/results.png)
 
-### 9.4 Optimization comparison
+### 5.3 U-Net++ Metrics
 
-**Figure 5 — Combined pipeline: before vs after optimization.**
+**Figure 5 — U-Net++ loss, Dice, IoU curves.**
+Shows train/val loss convergence, validation Dice peaking at 0.776 (epoch 19), and IoU tracking.
 
-![Bar chart of COCO metrics before and after tuning.](../experiments/YOLO11m_UNetPP/results/combined/optimization_comparison.png)
+![U-Net++ metrics.](../experiments/YOLO11m_UNetPP/results/unet/unet_metrics_combined.png)
 
-### 9.5 Mask R-CNN baseline curves
+### 5.4 Optimization Impact
 
-**Figure 6 — Mask R-CNN: training loss.**
+**Figure 6 — Combined pipeline: before vs after optimization.**
+Bar chart showing the dramatic improvement in bbox AP75 (0.012 → 0.522) after fixing ROI padding, bbox mode, and postprocessing.
 
-![Mask R-CNN training and validation loss.](../experiments/maskrcnn/results/training_curves.png)
+![Optimization comparison.](../experiments/YOLO11m_UNetPP/results/combined/optimization_comparison.png)
 
-**Figure 7 — Mask R-CNN: AP curves.**
+### 5.5 Mask R-CNN Baseline Curves
 
-![Mask R-CNN AP visualization.](../experiments/maskrcnn/results/ap_curves.png)
+**Figure 7 — Mask R-CNN training and validation loss.**
 
-### 9.6 Qualitative predictions — YOLO
+![Mask R-CNN loss curves.](../experiments/maskrcnn/results/training_curves.png)
 
-**Figure 8 — YOLO predictions (infected).**
+**Figure 8 — Mask R-CNN AP curves.**
+
+![Mask R-CNN AP.](../experiments/maskrcnn/results/ap_curves.png)
+
+### 5.6 YOLO Precision-Recall and F1 Curves
+
+**Figure 9 — Box Precision-Recall curve.**
+
+![Box PR curve.](../experiments/YOLO11m_UNetPP/results/yolo/BoxPR_curve.png)
+
+**Figure 10 — Mask Precision-Recall curve.**
+
+![Mask PR curve.](../experiments/YOLO11m_UNetPP/results/yolo/MaskPR_curve.png)
+
+**Figure 11 — Box F1 vs confidence threshold.**
+
+![Box F1 curve.](../experiments/YOLO11m_UNetPP/results/yolo/BoxF1_curve.png)
+
+**Figure 12 — Mask F1 vs confidence threshold.**
+
+![Mask F1 curve.](../experiments/YOLO11m_UNetPP/results/yolo/MaskF1_curve.png)
+
+### 5.7 Qualitative Predictions
+
+**Figure 13 — YOLO prediction (infected wound).**
 
 ![YOLO prediction.](../experiments/YOLO11m_UNetPP/results/yolo/predictions/pred_task_145_img_000151_infected.png)
 
-**Figure 9 — YOLO predictions (not infected).**
+**Figure 14 — YOLO prediction (not infected).**
 
 ![YOLO prediction.](../experiments/YOLO11m_UNetPP/results/yolo/predictions/pred_task_115_img_000041_not_infected.png)
 
-### 9.7 Qualitative predictions — Combined pipeline
-
-**Figure 10 — Combined prediction (infected).**
+**Figure 15 — Combined pipeline prediction (infected).**
 
 ![Combined prediction.](../experiments/YOLO11m_UNetPP/results/combined/predictions/combined_task_145_img_000151_infected.png)
 
-**Figure 11 — Combined prediction (not infected).**
+**Figure 16 — Combined pipeline prediction (not infected).**
 
 ![Combined prediction.](../experiments/YOLO11m_UNetPP/results/combined/predictions/combined_task_115_img_000041_not_infected.png)
 
-### 9.8 Error analysis samples
+**Figure 17 — Mask R-CNN prediction (infected).**
 
-**Figure 12 — Error: shifted ROI or mask.**
+![Mask R-CNN prediction.](../experiments/maskrcnn/results/predictions/pred_task_163_img_000186_infected_conf_0.90.png)
 
-![Shifted ROI error.](../experiments/YOLO11m_UNetPP/results/combined/error_analysis/qualitative/shifted_roi_or_mask/task_153_img_000167_infected.png)
+**Figure 18 — Mask R-CNN prediction (not infected).**
 
-**Figure 13 — Error: over-segmentation.**
+![Mask R-CNN prediction.](../experiments/maskrcnn/results/predictions/pred_task_223_img_000317_not_infected_conf_0.90.png)
 
-![Over-segmentation error.](../experiments/YOLO11m_UNetPP/results/combined/error_analysis/qualitative/over_segmentation/task_084_img_000371_not_infected.png)
+### 5.8 Error Analysis
 
-**Figure 14 — Error: fragmented mask.**
-
-![Fragmented mask error.](../experiments/YOLO11m_UNetPP/results/combined/error_analysis/qualitative/fragmented_mask/task_183_img_000235_infected.png)
-
-**Figure 15 — Error: missed detection.**
-
-![Missed detection error.](../experiments/YOLO11m_UNetPP/results/combined/error_analysis/qualitative/missed_detection/task_214_img_000303_infected.png)
+Error analysis was conducted on all 55 test images. Each image was categorized by dominant failure mode. Qualitative error analysis reports are available in `experiments/YOLO11m_UNetPP/results/combined/error_analysis/error_report_test.md`. The main finding is that **shifted ROI or mask** accounts for 33% of test images, making it the primary target for future improvement through better ROI-to-mask coordinate alignment.
