@@ -182,3 +182,6 @@ cython_debug/
 /.venv_cuda
 
 # Do not commit a full upstream CVAT git clone into this repo; default clone path is ../cvat (sibling of repo root).
+/docs/Преддипломная практика 2 к. маг (01.04.02, 02.04.02, 09.04.03 каф. ММиИИ)
+/experiments/maskrcnn/checkpoints
+/experiments/YOLO11m_UNetPP/checkpoints
