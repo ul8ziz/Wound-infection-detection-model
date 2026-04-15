@@ -4,7 +4,7 @@
 
 # === General ===
 seed: 42
-experiment_name: null  # set per experiment group to isolate checkpoints/results
+experiment_name: "group_C_res512"
 # Main data root: val/test images + labels (unchanged splits)
 data_root: "data/wound_focus_clean"
 # Offline-augmented training set (~4× images). Labels + images under this folder.
@@ -49,10 +49,10 @@ unet:
   architecture: "unetplusplus"   # unetplusplus | deeplabv3plus
   encoder: "efficientnet-b1"
   encoder_weights: "imagenet"
-  input_size: [384, 384]
+  input_size: [512, 512]
   in_channels: 3
   classes: 1
-  batch_size: 8
+  batch_size: 4                     # reduced for 512x512 (GPU memory)
   epochs: 50
   lr: 0.00005                     # fine-tune from Phase 2 checkpoint
   weight_decay: 0.0001
@@ -83,7 +83,7 @@ unet:
   eval_yolo_roi_cache_path: "experiments/YOLO11m_UNetPP/results/roi_cache/val_yolo_rois.json"
   test_yolo_roi_cache_path: "experiments/YOLO11m_UNetPP/results/roi_cache/test_yolo_rois.json"
   yolo_match_iou_min: 0.05
-  resume_checkpoint: null           # set to checkpoint path to resume training
+  resume_checkpoint: "experiments/YOLO11m_UNetPP/checkpoints/unet/phase2_384_backup/best_model.pth"
   freeze_encoder: false
   # Batch-size guidance for resolution sweeps (adjust for your GPU):
   #   256 -> 16, 384 -> 8, 512 -> 4

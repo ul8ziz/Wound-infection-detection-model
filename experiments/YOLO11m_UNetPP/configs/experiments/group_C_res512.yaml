@@ -14,5 +14,7 @@ unet:
     shift_frac: 0.10
   yolo_roi_cache_path: "experiments/YOLO11m_UNetPP/results/roi_cache/train_yolo_rois.json"
   eval_yolo_roi_cache_path: "experiments/YOLO11m_UNetPP/results/roi_cache/val_yolo_rois.json"
-  resume_checkpoint: "experiments/YOLO11m_UNetPP/checkpoints/unet/group_B_yolo_like_crops/best_model.pth"
+  test_yolo_roi_cache_path: "experiments/YOLO11m_UNetPP/results/roi_cache/test_yolo_rois.json"
+  resume_checkpoint: "experiments/YOLO11m_UNetPP/checkpoints/unet/best_model.pth"
   lr: 0.00005
+  early_stop_patience: 12

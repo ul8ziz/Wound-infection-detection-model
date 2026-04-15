@@ -1,6 +1,6 @@
 # YOLO11m + U-Net++ Training Report
 
-Generated: 2026-04-10 (updated with Group B mixed-ROI improvements)
+Generated: 2026-04-15 04:06:04
 
 ---
 
@@ -43,13 +43,13 @@ Generated: 2026-04-10 (updated with Group B mixed-ROI improvements)
 | classes | 1 |
 | batch_size | 8 |
 | epochs | 50 |
-| lr | 0.0001 |
+| lr | 5e-05 |
 | weight_decay | 0.0001 |
 | optimizer | AdamW |
 | scheduler | CosineAnnealingLR |
 | scheduler_T_max | 45 |
 | scheduler_eta_min | 1e-06 |
-| early_stop_patience | 8 |
+| early_stop_patience | 12 |
 | loss_type | focal_dice |
 | loss_bce_weight | 0.4 |
 | loss_dice_weight | 0.6 |
@@ -60,10 +60,11 @@ Generated: 2026-04-10 (updated with Group B mixed-ROI improvements)
 | roi_padding | 0.12 |
 | roi_crop_mode | mixed |
 | eval_roi_crop_mode | yolo_predicted |
-| roi_mix_weights | {'gt': 0.45, 'jitter': 0.30, 'yolo_cached': 0.25} |
-| roi_jitter | {'scale_min': 0.85, 'scale_max': 1.15, 'shift_frac': 0.10} |
-| yolo_roi_cache_path | results/roi_cache/train_yolo_rois.json |
-| eval_yolo_roi_cache_path | results/roi_cache/val_yolo_rois.json |
+| roi_mix_weights | {'gt': 0.45, 'jitter': 0.3, 'yolo_cached': 0.25} |
+| roi_jitter | {'scale_min': 0.85, 'scale_max': 1.15, 'shift_frac': 0.1} |
+| yolo_roi_cache_path | experiments/YOLO11m_UNetPP/results/roi_cache/train_yolo_rois.json |
+| eval_yolo_roi_cache_path | experiments/YOLO11m_UNetPP/results/roi_cache/val_yolo_rois.json |
+| test_yolo_roi_cache_path | experiments/YOLO11m_UNetPP/results/roi_cache/test_yolo_rois.json |
 | yolo_match_iou_min | 0.05 |
 | resume_checkpoint | None |
 | freeze_encoder | False |
@@ -72,19 +73,19 @@ Generated: 2026-04-10 (updated with Group B mixed-ROI improvements)
 
 | Parameter | Value |
 |-----------|-------|
-| yolo_conf_thresh | 0.2 |
+| yolo_conf_thresh | 0.15 |
 | yolo_min_conf_inference | 0.001 |
-| unet_mask_thresh | 0.35 |
-| roi_padding | 0.12 |
+| unet_mask_thresh | 0.25 |
+| roi_padding | 0.1 |
 | mask_upscale | linear_probs |
 | bbox_selection_strategy | all_above_thresh |
 | merge_iou_thresh | 0.5 |
-| coco_bbox_mode | mask_tight |
-| min_mask_area | 200 |
-| postprocess_preset | close_fill |
+| coco_bbox_mode | yolo_xyxy |
+| min_mask_area | 100 |
+| postprocess_preset | none |
 | postprocess | [] |
 | refinement_postprocess | none |
-| enable_tta | False |
+| enable_tta | True |
 | multi_scale_refinement | False |
 | multi_scale_roi_paddings | [0.0, 0.12, 0.2] |
 | multi_scale_fusion | mean |
@@ -102,80 +103,38 @@ Generated: 2026-04-10 (updated with Group B mixed-ROI improvements)
 
 ## YOLO11m-seg Results
 
-| Metric | Value |
-|--------|-------|
-| epoch | 60.0000 |
-| time | 4012.7500 |
-| train/box_loss | 0.8125 |
-| train/seg_loss | 1.9429 |
-| train/cls_loss | 0.4990 |
-| train/dfl_loss | 1.0036 |
-| train/sem_loss | 0.0000 |
-| metrics/precision(B) | 0.8971 |
-| metrics/recall(B) | 0.8204 |
-| metrics/mAP50(B) | 0.8591 |
-| metrics/mAP50-95(B) | 0.5163 |
-| metrics/precision(M) | 0.8074 |
-| metrics/recall(M) | 0.7294 |
-| metrics/mAP50(M) | 0.7183 |
-| metrics/mAP50-95(M) | 0.2601 |
-| val/box_loss | 1.3275 |
-| val/seg_loss | 3.0237 |
-| val/cls_loss | 0.7123 |
-| val/dfl_loss | 1.3802 |
-| val/sem_loss | 0.0000 |
-| lr/pg0 | 0.0003 |
-| lr/pg1 | 0.0003 |
-| lr/pg2 | 0.0003 |
-| training_completed | True |
-| bbox_mAP50 | 0.8169 |
-| bbox_mAP50_95 | 0.5387 |
-| segm_mAP50 | 0.6620 |
-| segm_mAP50_95 | 0.2503 |
-| combined_AP50 | 0.7395 |
+*Not available — YOLO was not trained or evaluated.*
+
 
 ---
 
-## U-Net++ Results (Mixed ROI Training)
+## U-Net++ Results
 
-- **Best Dice (val):** 0.7497 at epoch 1
-- **Training time:** 5586s
-- **ROI mode:** mixed (45% GT, 30% jittered, 25% cached YOLO)
-- **Eval ROI mode:** yolo_predicted (realistic inference conditions)
+*Not available.*
 
-### Test Metrics (YOLO-predicted ROIs)
-
-| Metric | Value |
-|--------|-------|
-| dice | 0.3376 |
-| iou | 0.2868 |
-| pixel_accuracy | 0.8989 |
-
-> Note: Standalone U-Net++ test metrics use YOLO-predicted ROIs, which are noisier
-> than GT boxes. The real-world performance is best measured by the Combined Pipeline
-> metrics below, which show improvement over the GT-only baseline.
 
 ---
 
-## Combined Pipeline Results (Group B — Mixed ROI)
+## Combined Pipeline Results
 
-| Metric | Value | Baseline (GT-only) | Delta |
-|--------|-------|-------------------|-------|
-| mean_dice | 0.6761 | 0.6695 | +0.0066 |
-| mean_iou | 0.5543 | 0.5491 | +0.0052 |
-| mean_dice_conditional | 0.6886 | 0.6819 | +0.0067 |
-| mean_iou_conditional | 0.5646 | 0.5592 | +0.0054 |
-| n_images_total | 55 | 55 | — |
-| n_images_evaluated | 54 | 54 | — |
-| n_images_missed | 1 | 1 | — |
-| coco_bbox_AP | 0.4849 | 0.4805 | +0.0044 |
-| coco_bbox_AP50 | 0.7389 | 0.7502 | −0.0113 |
-| coco_bbox_AP75 | 0.5428 | 0.5223 | **+0.0205** |
-| coco_segm_AP | 0.2033 | 0.1984 | +0.0049 |
-| coco_segm_AP50 | 0.5814 | 0.5611 | **+0.0204** |
-| coco_segm_AP75 | 0.1050 | 0.0991 | +0.0060 |
-| coco_combined_AP50 | 0.6602 | 0.6556 | +0.0046 |
-| coco_combined_AP75 | 0.3239 | 0.3107 | **+0.0132** |
+| Metric | Value |
+|--------|-------|
+| mean_dice | 0.6949 |
+| mean_iou | 0.5670 |
+| mean_dice_conditional | 0.7078 |
+| mean_iou_conditional | 0.5775 |
+| n_images_total | 55 |
+| n_images_evaluated | 54 |
+| n_images_missed | 1 |
+| n_predictions_saved | 8 |
+| coco_bbox_AP | 0.5061 |
+| coco_bbox_AP50 | 0.7737 |
+| coco_bbox_AP75 | 0.5903 |
+| coco_segm_AP | 0.2214 |
+| coco_segm_AP50 | 0.6448 |
+| coco_segm_AP75 | 0.0936 |
+| coco_combined_AP50 | 0.7093 |
+| coco_combined_AP75 | 0.3419 |
 
 ---
 

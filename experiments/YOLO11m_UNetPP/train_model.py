@@ -622,9 +622,10 @@ def train_unet(config: dict, script_dir: Path) -> dict:
     """Full U-Net++ training loop with early stopping.
 
     **Best checkpoint:** ``best_model.pth`` is the weights from the validation epoch
-    with the **highest mean Dice** on ``val`` (macro average over ROI crops in
-    ``evaluate_unet_metrics``). Test metrics are computed after reloading that
-    checkpoint — not from ``last_checkpoint.pth``.
+    with the **highest mean Dice** on ``val`` at the deployment threshold
+    (``unet.eval_threshold`` or ``combined.unet_mask_thresh``, default 0.5).
+    Test metrics are computed after reloading that checkpoint — not from
+    ``last_checkpoint.pth``.
     """
     print("\n" + "=" * 60)
     print("Stage 2: Training U-Net++")
@@ -682,6 +683,11 @@ def train_unet(config: dict, script_dir: Path) -> dict:
 
     epochs = unet_cfg.get("epochs", 50)
     patience = unet_cfg.get("early_stop_patience", 10)
+    combined_cfg = config.get("combined", {})
+    eval_threshold = float(unet_cfg.get(
+        "eval_threshold",
+        combined_cfg.get("unet_mask_thresh", 0.5),
+    ))
     unet_dirs = get_unet_dirs(script_dir, config)
     ckpt_dir = unet_dirs["checkpoints"]
     results_dir = unet_dirs["results"]
@@ -717,7 +723,7 @@ def train_unet(config: dict, script_dir: Path) -> dict:
                 model, train_loader, optimizer, criterion, device, epoch,
             )
             val_loss = validate_one_epoch_unet(model, val_loader, criterion, device)
-            metrics = evaluate_unet_metrics(model, val_loader, device)
+            metrics = evaluate_unet_metrics(model, val_loader, device, threshold=eval_threshold)
             val_dice = metrics["dice"]
             if not math.isfinite(val_dice):
                 print(f"  [WARNING] Non-finite val Dice — skipping best update for this epoch.")
@@ -764,9 +770,9 @@ def train_unet(config: dict, script_dir: Path) -> dict:
         load_unet_checkpoint(model, best_path, device)
 
     print("\n" + "=" * 60)
-    print("U-Net++ Test Evaluation")
+    print(f"U-Net++ Test Evaluation (threshold={eval_threshold:.2f})")
     print("=" * 60)
-    test_metrics = evaluate_unet_metrics(model, test_loader, device)
+    test_metrics = evaluate_unet_metrics(model, test_loader, device, threshold=eval_threshold)
     for k, v in test_metrics.items():
         if isinstance(v, float):
             print(f"  {k}: {v:.4f}")

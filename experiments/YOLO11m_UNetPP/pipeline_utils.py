@@ -55,6 +55,73 @@ def imread_bgr_ultralytics_safe(path: Path) -> Optional[np.ndarray]:
 
 
 # ============================================================================
+# Letterbox (aspect-ratio-preserving square pad)
+# ============================================================================
+
+def letterbox_pad(
+    image: np.ndarray,
+    mask: Optional[np.ndarray] = None,
+    pad_value: int = 0,
+) -> Tuple[np.ndarray, Optional[np.ndarray], Tuple[int, int, int, int]]:
+    """Pad a non-square crop to a square by adding symmetric borders.
+
+    Returns ``(padded_image, padded_mask, (top, bottom, left, right))`` where
+    the tuple records how much padding was added on each side so that the
+    caller can strip it after inference.
+    """
+    h, w = image.shape[:2]
+    if h == w:
+        return image, mask, (0, 0, 0, 0)
+
+    side = max(h, w)
+    top = (side - h) // 2
+    bottom = side - h - top
+    left = (side - w) // 2
+    right = side - w - left
+
+    padded_img = cv2.copyMakeBorder(
+        image, top, bottom, left, right,
+        borderType=cv2.BORDER_CONSTANT, value=(pad_value, pad_value, pad_value),
+    )
+    padded_mask = None
+    if mask is not None:
+        padded_mask = cv2.copyMakeBorder(
+            mask, top, bottom, left, right,
+            borderType=cv2.BORDER_CONSTANT, value=0,
+        )
+    return padded_img, padded_mask, (top, bottom, left, right)
+
+
+def letterbox_unpad(
+    tensor: np.ndarray,
+    pad_info: Tuple[int, int, int, int],
+    orig_hw: Tuple[int, int],
+) -> np.ndarray:
+    """Remove letterbox padding and resize back to ``orig_hw``.
+
+    ``tensor`` is the model output at the padded-square resolution.
+    ``pad_info`` is ``(top, bottom, left, right)`` from :func:`letterbox_pad`.
+    ``orig_hw`` is ``(crop_h, crop_w)`` of the original non-square ROI.
+    """
+    if tensor.ndim < 2:
+        return np.zeros(orig_hw, dtype=tensor.dtype)
+    top, bottom, left, right = pad_info
+    if top == 0 and bottom == 0 and left == 0 and right == 0:
+        if tensor.shape[:2] == orig_hw:
+            return tensor
+        return cv2.resize(tensor, (orig_hw[1], orig_hw[0]), interpolation=cv2.INTER_LINEAR)
+    h_full, w_full = tensor.shape[:2]
+    h_content = max(1, h_full - top - bottom)
+    w_content = max(1, w_full - left - right)
+    content = tensor[top:top + h_content, left:left + w_content]
+    if content.size == 0:
+        return np.zeros(orig_hw, dtype=tensor.dtype)
+    if content.shape[:2] != orig_hw:
+        content = cv2.resize(content, (orig_hw[1], orig_hw[0]), interpolation=cv2.INTER_LINEAR)
+    return content
+
+
+# ============================================================================
 # Utilities
 # ============================================================================
 
@@ -371,10 +438,12 @@ class WoundROIDataset(Dataset):
         crop_jitter: Optional[Dict[str, float]] = None,
         yolo_roi_cache_path: Optional[Union[str, Path]] = None,
         yolo_match_iou_min: float = 0.0,
+        letterbox: bool = False,
     ):
         self.root = Path(root)
         self.transforms = transforms
         self.roi_padding = roi_padding
+        self.letterbox = letterbox
         self.crop_mode = crop_mode
         self.crop_mix_weights = self._normalize_mix_weights(crop_mix_weights)
         self.crop_jitter = crop_jitter or {}
@@ -606,6 +675,9 @@ class WoundROIDataset(Dataset):
             crop_img = image
             crop_mask = mask_full
 
+        if self.letterbox:
+            crop_img, crop_mask, _ = letterbox_pad(crop_img, crop_mask, pad_value=0)
+
         if self.transforms:
             transformed = self.transforms(image=crop_img, mask=crop_mask)
             crop_img = transformed["image"]
@@ -647,9 +719,15 @@ def get_unet_transforms(
     augmentations: shift-scale-rotate, CLAHE, color jitter, and light
     elastic transform (kept mild to preserve wound geometry).
     """
+    resize = A.Resize(
+        height=image_size[0],
+        width=image_size[1],
+        interpolation=cv2.INTER_LINEAR,
+        mask_interpolation=cv2.INTER_NEAREST,
+    )
     if train:
         return A.Compose([
-            A.Resize(height=image_size[0], width=image_size[1]),
+            resize,
             A.HorizontalFlip(p=0.5),
             A.VerticalFlip(p=0.5),
             A.RandomRotate90(p=0.5),
@@ -661,14 +739,13 @@ def get_unet_transforms(
             A.CLAHE(clip_limit=2.0, tile_grid_size=(8, 8), p=0.3),
             A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.1, hue=0.05, p=0.3),
             A.GaussNoise(p=0.2),
-            A.GaussianBlur(blur_limit=(3, 5), p=0.15),
-            A.ElasticTransform(alpha=50, sigma=10, p=0.1),
+            A.GaussianBlur(blur_limit=(3, 5), p=0.05),
             A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
             ToTensorV2(),
         ])
     else:
         return A.Compose([
-            A.Resize(height=image_size[0], width=image_size[1]),
+            resize,
             A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
             ToTensorV2(),
         ])
@@ -691,6 +768,7 @@ def create_unet_datasets(
     crop_jitter = dict(unet_cfg.get("roi_jitter") or {})
     yolo_roi_cache_path = unet_cfg.get("yolo_roi_cache_path")
     eval_yolo_roi_cache_path = unet_cfg.get("eval_yolo_roi_cache_path", yolo_roi_cache_path)
+    test_yolo_roi_cache_path = unet_cfg.get("test_yolo_roi_cache_path", eval_yolo_roi_cache_path)
     yolo_match_iou_min = float(unet_cfg.get("yolo_match_iou_min", 0.0))
 
     print(f"  U-Net train root: {data_root_train}")
@@ -745,9 +823,9 @@ def create_unet_datasets(
         crop_mix_weights=crop_mix_weights,
         crop_jitter=crop_jitter,
         yolo_roi_cache_path=(
-            str((project_root / eval_yolo_roi_cache_path).resolve())
-            if eval_yolo_roi_cache_path and not Path(eval_yolo_roi_cache_path).is_absolute()
-            else eval_yolo_roi_cache_path
+            str((project_root / test_yolo_roi_cache_path).resolve())
+            if test_yolo_roi_cache_path and not Path(test_yolo_roi_cache_path).is_absolute()
+            else test_yolo_roi_cache_path
         ),
         yolo_match_iou_min=yolo_match_iou_min,
     )

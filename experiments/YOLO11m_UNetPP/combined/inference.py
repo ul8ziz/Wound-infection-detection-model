@@ -209,13 +209,13 @@ def _predict_roi_probs(
     if crop.size == 0:
         return None
 
+    crop_h, crop_w = crop.shape[:2]
     uh, uw = unet_hw[0], unet_hw[1]
     crop_resized = cv2.resize(crop, (uw, uh), interpolation=cv2.INTER_LINEAR)
     crop_tensor = torch.from_numpy(crop_resized).permute(2, 0, 1).float().unsqueeze(0) / 255.0
     crop_tensor = (crop_tensor.to(device) - mean) / std
 
     probs = _unet_probs_tta(unet_model, crop_tensor, enable_tta)
-    crop_h, crop_w = cy2 - cy1, cx2 - cx1
     prob_up = cv2.resize(probs.astype(np.float32), (crop_w, crop_h), interpolation=cv2.INTER_LINEAR)
     return {
         "probs_small": probs.astype(np.float32),
