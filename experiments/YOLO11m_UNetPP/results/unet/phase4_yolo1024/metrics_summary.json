@@ -1,0 +1,57 @@
+{
+  "best_dice": 0.8273161058619698,
+  "best_epoch": 65,
+  "training_time_s": 8247.033048152924,
+  "test_metrics": {
+    "dice": 0.7963309455597128,
+    "iou": 0.6828496316855179,
+    "pixel_accuracy": 0.8961025959736592,
+    "n_samples": 74
+  },
+  "config": {
+    "architecture": "unetplusplus",
+    "encoder": "efficientnet-b1",
+    "encoder_weights": "imagenet",
+    "input_size": [
+      512,
+      512
+    ],
+    "in_channels": 3,
+    "classes": 1,
+    "batch_size": 4,
+    "epochs": 80,
+    "lr": 0.0001,
+    "weight_decay": 0.0001,
+    "optimizer": "AdamW",
+    "scheduler": "CosineAnnealingLR",
+    "scheduler_T_max": 75,
+    "scheduler_eta_min": 1e-06,
+    "early_stop_patience": 15,
+    "loss_type": "focal_dice_boundary",
+    "loss_bce_weight": 0.4,
+    "loss_dice_weight": 0.6,
+    "loss_boundary_weight": 0.2,
+    "boundary_kernel_size": 5,
+    "focal_alpha": 0.25,
+    "focal_gamma": 2.0,
+    "roi_padding": 0.12,
+    "roi_crop_mode": "mixed",
+    "eval_roi_crop_mode": "yolo_predicted",
+    "roi_mix_weights": {
+      "gt": 0.45,
+      "jitter": 0.3,
+      "yolo_cached": 0.25
+    },
+    "roi_jitter": {
+      "scale_min": 0.85,
+      "scale_max": 1.15,
+      "shift_frac": 0.1
+    },
+    "yolo_roi_cache_path": "experiments/YOLO11m_UNetPP/results/roi_cache/train_yolo_rois.json",
+    "eval_yolo_roi_cache_path": "experiments/YOLO11m_UNetPP/results/roi_cache/val_yolo_rois.json",
+    "test_yolo_roi_cache_path": "experiments/YOLO11m_UNetPP/results/roi_cache/test_yolo_rois.json",
+    "yolo_match_iou_min": 0.05,
+    "resume_checkpoint": null,
+    "freeze_encoder": false
+  }
+}

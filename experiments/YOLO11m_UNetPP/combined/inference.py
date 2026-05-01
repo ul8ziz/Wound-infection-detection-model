@@ -35,11 +35,27 @@ def _unet_probs_tta(
 ) -> np.ndarray:
     pred = torch.sigmoid(unet_model(crop_tensor))
     if enable_tta:
-        flipped = torch.flip(crop_tensor, dims=[-1])
-        pred_flip = torch.sigmoid(unet_model(flipped))
-        pred_flip = torch.flip(pred_flip, dims=[-1])
-        pred = (pred + pred_flip) * 0.5
+        hflip = torch.flip(crop_tensor, dims=[-1])
+        p_hflip = torch.flip(torch.sigmoid(unet_model(hflip)), dims=[-1])
+
+        vflip = torch.flip(crop_tensor, dims=[-2])
+        p_vflip = torch.flip(torch.sigmoid(unet_model(vflip)), dims=[-2])
+
+        rot180 = torch.flip(crop_tensor, dims=[-2, -1])
+        p_rot180 = torch.flip(torch.sigmoid(unet_model(rot180)), dims=[-2, -1])
+
+        pred = (pred + p_hflip + p_vflip + p_rot180) * 0.25
     return pred.squeeze().cpu().numpy()
+
+
+def _unet_probs_ensemble(
+    models: List[nn.Module],
+    crop_tensor: torch.Tensor,
+    enable_tta: bool,
+) -> np.ndarray:
+    """Average probability maps from multiple U-Net models (with optional TTA each)."""
+    preds = [_unet_probs_tta(m, crop_tensor, enable_tta) for m in models]
+    return np.mean(preds, axis=0)
 
 
 def _mask_nms_instances(
@@ -191,7 +207,7 @@ def _select_wound_indices(
 
 
 def _predict_roi_probs(
-    unet_model: nn.Module,
+    unet_model,
     image_rgb: np.ndarray,
     yolo_xyxy: np.ndarray,
     device: torch.device,
@@ -215,7 +231,10 @@ def _predict_roi_probs(
     crop_tensor = torch.from_numpy(crop_resized).permute(2, 0, 1).float().unsqueeze(0) / 255.0
     crop_tensor = (crop_tensor.to(device) - mean) / std
 
-    probs = _unet_probs_tta(unet_model, crop_tensor, enable_tta)
+    if isinstance(unet_model, (list, tuple)):
+        probs = _unet_probs_ensemble(unet_model, crop_tensor, enable_tta)
+    else:
+        probs = _unet_probs_tta(unet_model, crop_tensor, enable_tta)
     prob_up = cv2.resize(probs.astype(np.float32), (crop_w, crop_h), interpolation=cv2.INTER_LINEAR)
     return {
         "probs_small": probs.astype(np.float32),
@@ -351,6 +370,7 @@ def _refine_one_roi(
         m_roi = cv2.resize(m_small, (crop_w, crop_h), interpolation=cv2.INTER_NEAREST)
         full_mask = np.zeros((img_h, img_w), dtype=np.uint8)
         full_mask[y1r:y2r, x1r:x2r] = m_roi
+        fused_probs_full = _full_prob_canvas(pred0["prob_up"], pred0["crop_box"], (img_h, img_w))
     else:
         fused_probs_full, padded_roi = _fuse_multiscale_probabilities(predictions, (img_h, img_w), cfg)
         full_mask = (fused_probs_full >= cfg.unet_mask_thresh).astype(np.uint8)
@@ -362,11 +382,83 @@ def _refine_one_roi(
     if cfg.min_mask_area > 0:
         full_mask = filter_min_area(full_mask, cfg.min_mask_area)
 
+    mask_pixels = full_mask > 0
+    if mask_pixels.sum() > 0:
+        mask_conf = float(fused_probs_full[mask_pixels].mean())
+    else:
+        mask_conf = 0.0
+    w = cfg.score_fusion_yolo_weight
+    fused_score = w * float(score) + (1.0 - w) * mask_conf
+
     return {
         "mask": full_mask,
         "yolo_xyxy": [x1, y1, x2, y2],
         "padded_roi": padded_roi,
-        "score": float(score),
+        "score": fused_score,
+    }
+
+
+def _center_crop_fallback(
+    unet_model: nn.Module,
+    image_rgb: np.ndarray,
+    device: torch.device,
+    config: dict,
+    cfg: CombinedInferenceConfig,
+    marker_ppcm: Optional[float],
+    empty: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Run U-Net on the central 80% of the image when YOLO finds no wound boxes."""
+    img_h, img_w = image_rgb.shape[:2]
+    margin_x = int(img_w * 0.10)
+    margin_y = int(img_h * 0.10)
+    center_box = np.array([margin_x, margin_y, img_w - margin_x, img_h - margin_y], dtype=np.float32)
+
+    unet_cfg = config.get("unet", {})
+    unet_size = tuple(unet_cfg.get("input_size", [256, 256]))
+    mean = torch.tensor(IMAGENET_MEAN).view(1, 3, 1, 1).to(device)
+    std = torch.tensor(IMAGENET_STD).view(1, 3, 1, 1).to(device)
+
+    pred = _predict_roi_probs(
+        unet_model, image_rgb, center_box, device, mean, std,
+        unet_size, cfg.enable_tta, roi_padding=0.0,
+    )
+    if pred is None:
+        out = dict(empty)
+        out["pixels_per_cm"] = marker_ppcm
+        return out
+
+    prob_up = pred["prob_up"]
+    mask = (prob_up >= cfg.unet_mask_thresh).astype(np.uint8)
+
+    post_ops = resolve_postprocess(cfg.postprocess_preset, cfg.postprocess)
+    if post_ops:
+        full_mask = np.zeros((img_h, img_w), dtype=np.uint8)
+        cx1, cy1, cx2, cy2 = pred["crop_box"]
+        full_mask[cy1:cy2, cx1:cx2] = mask
+        full_mask = apply_postprocess_chain(full_mask, post_ops)
+    else:
+        full_mask = np.zeros((img_h, img_w), dtype=np.uint8)
+        cx1, cy1, cx2, cy2 = pred["crop_box"]
+        full_mask[cy1:cy2, cx1:cx2] = mask
+
+    if full_mask.sum() < 10:
+        out = dict(empty)
+        out["pixels_per_cm"] = marker_ppcm
+        return out
+
+    tb = tight_bbox_from_binary_mask(full_mask)
+    logger.info("Center-crop fallback produced mask (area=%d px)", int(full_mask.sum()))
+    return {
+        "masks": [full_mask],
+        "scores": [0.05],
+        "boxes": [[float(tb[0]), float(tb[1]), float(tb[2]), float(tb[3])]],
+        "boxes_yolo_xyxy": [[float(tb[0]), float(tb[1]), float(tb[2]), float(tb[3])]],
+        "boxes_padded_roi": [[float(center_box[0]), float(center_box[1]),
+                              float(center_box[2]), float(center_box[3])]],
+        "boxes_mask_tight_xyxy": [[float(tb[0]), float(tb[1]), float(tb[2]), float(tb[3])]],
+        "image_shape": (img_h, img_w),
+        "pixels_per_cm": marker_ppcm,
+        "coco_bbox_mode": cfg.coco_bbox_mode,
     }
 
 
@@ -428,7 +520,7 @@ def combined_inference(
 
     marker_ppcm = calculate_pixels_per_cm_from_marker(
         result,
-        marker_class_id=1,
+        marker_class_id=cfg.marker_class_id,
         marker_real_cm=cfg.marker_real_cm,
     )
 
@@ -444,13 +536,21 @@ def combined_inference(
     )
 
     if not indices:
-        out = dict(empty)
-        out["pixels_per_cm"] = marker_ppcm
-        return out
+        return _center_crop_fallback(
+            unet_model, image_rgb, device, config, cfg, marker_ppcm, empty,
+        )
 
-    unet_model.eval()
+    if isinstance(unet_model, (list, tuple)):
+        for m in unet_model:
+            m.eval()
+    else:
+        unet_model.eval()
     mean = torch.tensor(IMAGENET_MEAN).view(1, 3, 1, 1).to(device)
     std = torch.tensor(IMAGENET_STD).view(1, 3, 1, 1).to(device)
+
+    yolo_masks_np = None
+    if result.masks is not None and len(result.masks) > 0:
+        yolo_masks_np = result.masks.data.cpu().numpy()
 
     instances: List[Dict[str, Any]] = []
     for i in indices:
@@ -467,6 +567,23 @@ def combined_inference(
         )
         if inst is not None and inst["mask"].sum() >= 1:
             instances.append(inst)
+        elif yolo_masks_np is not None and i < len(yolo_masks_np):
+            yolo_mask = yolo_masks_np[i]
+            if yolo_mask.shape[:2] != (img_h, img_w):
+                yolo_mask = cv2.resize(yolo_mask, (img_w, img_h), interpolation=cv2.INTER_NEAREST)
+            yolo_mask_bin = (yolo_mask > 0.5).astype(np.uint8)
+            if yolo_mask_bin.sum() >= 1:
+                x1f, y1f, x2f, y2f = (
+                    float(boxes_xyxy[i][0]), float(boxes_xyxy[i][1]),
+                    float(boxes_xyxy[i][2]), float(boxes_xyxy[i][3]),
+                )
+                instances.append({
+                    "mask": yolo_mask_bin,
+                    "yolo_xyxy": [x1f, y1f, x2f, y2f],
+                    "padded_roi": [x1f, y1f, x2f, y2f],
+                    "score": float(scores[i]) * 0.8,
+                })
+                logger.info("U-Net mask empty for box %d, falling back to YOLO mask", i)
 
     if not instances:
         out = dict(empty)

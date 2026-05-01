@@ -1,0 +1,126 @@
+# =============================================================================
+# YOLO11m + U-Net++ Wound Detection & Segmentation — Configuration
+# =============================================================================
+
+# === General ===
+seed: 42
+experiment_name: "phase7_finetune_roi20"  # Phase 7: fine-tune with ROI padding 0.20
+# Main data root: val/test images + labels (unchanged splits)
+data_root: "data/wound_focus_clean"
+# Offline-augmented training set (~4× images). Labels + images under this folder.
+data_root_train: "data/wound_focus_clean/augmented_marker"
+ann_train: "data/wound_focus_clean/augmented_marker/train_augmented.json"
+ann_val: "data/wound_focus_clean/val_wound_only.json"
+ann_test: "data/wound_focus_clean/test_wound_only.json"
+num_workers: 2   # Windows-safe default; increase on Linux
+# Class list for YOLO training.  Options:
+#   ["wound"]            — wound-only mode (default, single-class)
+#   ["wound", "marker"]  — wound + 3x3 cm marker (enables dynamic calibration)
+classes: ["wound", "marker"]
+
+# === YOLO11m-seg (Stage 1: Detection + Coarse Segmentation) ===
+yolo:
+  model: "yolo11m-seg.pt"
+  image_size: 1024
+  batch_size: 2
+  epochs: 80
+  lr0: 0.01
+  lrf: 0.01
+  optimizer: "SGD"
+  momentum: 0.937
+  weight_decay: 0.0005
+  patience: 20
+  degrees: 7
+  perspective: 0.0
+  flipud: 0.3
+  fliplr: 0.5
+  mosaic: 0.3
+  mixup: 0.0
+  close_mosaic: 15
+  hsv_h: 0.01
+  hsv_s: 0.5
+  hsv_v: 0.3
+
+# === U-Net++ (Stage 2: Refined Segmentation on ROI crops) ===
+# Default below is a "fast training" preset (shorter wall-clock). For maximum ROI
+# detail, use e.g. input_size [384, 384], encoder efficientnet-b3, epochs 50,
+# scheduler_T_max 50, early_stop_patience 10 (see README / DOCUMENTATION).
+unet:
+  architecture: "unetplusplus"   # unetplusplus | deeplabv3plus
+  encoder: "efficientnet-b1"
+  encoder_weights: "imagenet"
+  input_size: [512, 512]
+  in_channels: 3
+  classes: 1
+  batch_size: 4                    # halved for 512x512 GPU memory
+  epochs: 40
+  lr: 0.00003                     # fine-tuning LR for pre-trained model
+  weight_decay: 0.0001
+  optimizer: "AdamW"
+  scheduler: "CosineAnnealingLR"
+  scheduler_T_max: 35
+  scheduler_eta_min: 0.000001
+  early_stop_patience: 15          # patience for 512 convergence
+  loss_type: "focal_dice_boundary"
+  loss_bce_weight: 0.4
+  loss_dice_weight: 0.6
+  loss_boundary_weight: 0.20     # increased edge emphasis for sharper contours
+  boundary_kernel_size: 5
+  focal_alpha: 0.25
+  focal_gamma: 2.0
+  roi_padding: 0.20
+  roi_crop_mode: "mixed"          # gt_only | mixed | yolo_predicted
+  eval_roi_crop_mode: "yolo_predicted"  # realistic YOLO-driven validation (matches inference)
+  roi_mix_weights:
+    gt: 0.45
+    jitter: 0.30
+    yolo_cached: 0.25
+  roi_jitter:
+    scale_min: 0.85
+    scale_max: 1.15
+    shift_frac: 0.10
+  yolo_roi_cache_path: "experiments/YOLO11m_UNetPP/results/roi_cache/train_yolo_rois.json"
+  eval_yolo_roi_cache_path: "experiments/YOLO11m_UNetPP/results/roi_cache/val_yolo_rois.json"
+  test_yolo_roi_cache_path: "experiments/YOLO11m_UNetPP/results/roi_cache/test_yolo_rois.json"
+  yolo_match_iou_min: 0.05
+  resume_checkpoint: "experiments/YOLO11m_UNetPP/checkpoints/unet/phase4_yolo1024/best_model.pth"
+  freeze_encoder: false
+  # Batch-size guidance for resolution sweeps (adjust for your GPU):
+  #   256 -> 16, 384 -> 8, 512 -> 4
+  
+# === Combined Inference (YOLO + U-Net++ on full images) ===
+# ``combined.roi_padding`` is independent: expands YOLO boxes at inference only.
+# Tuned defaults (val, partial grid — see results/combined/tuning/best_config_val.json; re-run scripts/tune_combined.py for full search):
+combined:
+  yolo_conf_thresh: 0.25           # optimized via threshold sweep (was 0.05)
+  yolo_min_conf_inference: 0.001   # Ultralytics conf= (low); filter with yolo_conf_thresh in Python)
+  unet_mask_thresh: 0.40           # tuned (was 0.25) — tune_combined.py Stage C best
+  roi_padding: 0.20                # matched to training roi_padding
+  mask_upscale: "linear_probs"     # linear_probs | nearest_binary
+  bbox_selection_strategy: "all_above_thresh"   # all_above_thresh | highest_conf_single | merge_overlapping
+  merge_iou_thresh: 0.5
+  coco_bbox_mode: "yolo_xyxy"      # tuned — stable across stages
+  min_mask_area: 0                 # tuned (was 100) — tune_combined.py Stage B best
+  postprocess_preset: "largest_then_fill"  # tuned (was none) — tune_combined.py Stage B best
+  postprocess: []                  # optional ordered ops; see combined/postprocess.py
+  refinement_postprocess: "none"   # none | boundary_refine | boundary_refine_strong
+  enable_tta: true                 # tuned (was false) — optimization report Section 5
+  multi_scale_refinement: true
+  multi_scale_roi_paddings: [0.10, 0.20, 0.30]
+  multi_scale_fusion: "mean"      # mean | weighted_mean | stability_select
+  multi_scale_weights: []         # optional weights aligned to multi_scale_roi_paddings
+  score_fusion_yolo_weight: 0.7   # final_score = w*yolo_conf + (1-w)*mask_confidence
+  debug_save_intermediates: false
+  debug_output_dir: "results/combined/debug"
+  debug_max_images: 16
+  balanced_score_weights:
+    bbox_AP50: 0.25
+    segm_AP50: 0.20
+    combined_AP50: 0.20
+    bbox_AP75: 0.15
+    segm_AP75: 0.15
+    mean_dice: 0.05
+  pixels_per_cm: 60.0             # fallback when marker not detected (median of detected values ~63)
+  marker_class_id: 1              # YOLO class index for the 3x3 cm marker
+  marker_real_cm: 3.0
+  num_qualitative_samples: 8

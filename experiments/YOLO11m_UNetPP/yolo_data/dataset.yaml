@@ -1,5 +1,6 @@
 names:
   0: wound
+  1: marker
 path: E:\GitHub\Wound-infection-detection-model\experiments\YOLO11m_UNetPP\yolo_data
 test: test.txt
 train: train.txt

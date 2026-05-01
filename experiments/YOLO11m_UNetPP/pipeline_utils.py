@@ -740,6 +740,12 @@ def get_unet_transforms(
             A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.1, hue=0.05, p=0.3),
             A.GaussNoise(p=0.2),
             A.GaussianBlur(blur_limit=(3, 5), p=0.05),
+            A.CoarseDropout(
+                num_holes_range=(1, 3), hole_height_range=(16, 32),
+                hole_width_range=(16, 32), fill=0, p=0.1,
+            ),
+            A.RandomGamma(gamma_limit=(80, 120), p=0.2),
+            A.Sharpen(alpha=(0.1, 0.3), lightness=(0.9, 1.1), p=0.1),
             A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
             ToTensorV2(),
         ])

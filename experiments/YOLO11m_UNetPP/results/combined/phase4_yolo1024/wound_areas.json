@@ -1,0 +1,332 @@
+[
+  {
+    "image": "images/task_163_img_000186_infected.jpg",
+    "area_cm2": 53.664302425444944,
+    "pixels_per_cm": 86.62434864273312,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_223_img_000317_not_infected.jpg",
+    "area_cm2": 33.69223614039439,
+    "pixels_per_cm": 42.32939614237106,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_224_img_000322_infected.jpg",
+    "area_cm2": 4.077491824257074,
+    "pixels_per_cm": 48.41831609353358,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_145_img_000151_infected.jpg",
+    "area_cm2": 22.577537297751626,
+    "pixels_per_cm": 45.990337149352484,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_201_img_000283_infected.jpg",
+    "area_cm2": 20.9666383201413,
+    "pixels_per_cm": 41.21353607196979,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_115_img_000041_not_infected.jpg",
+    "area_cm2": 28.925085358505722,
+    "pixels_per_cm": 47.04135296618167,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_167_img_000194_not_infected.jpg",
+    "area_cm2": 26.100475603311605,
+    "pixels_per_cm": 56.15949509111428,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_119_img_000064_not_infected.jpg",
+    "area_cm2": 41.72833712772384,
+    "pixels_per_cm": 48.902397123703906,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_199_img_000275_infected.jpg",
+    "area_cm2": 66.77184695323571,
+    "pixels_per_cm": 92.02173656261873,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_184_img_000236_infected.jpg",
+    "area_cm2": 34.49464682512962,
+    "pixels_per_cm": 40.62155968338871,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_112_img_000023_not_infected.jpg",
+    "area_cm2": 14.499227202472952,
+    "pixels_per_cm": 48.70660461717008,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_140_img_000136_not_infected.jpg",
+    "area_cm2": 8.542995394391653,
+    "pixels_per_cm": 61.73959651453658,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_161_img_000177_infected.jpg",
+    "area_cm2": 25.647498900960873,
+    "pixels_per_cm": 118.96965065838337,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_162_img_000184_not_infected.jpg",
+    "area_cm2": 0.39357396202795747,
+    "pixels_per_cm": 115.38582620447318,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_117_img_000050_not_infected.jpg",
+    "area_cm2": 34.02823875802998,
+    "pixels_per_cm": 40.74855143982967,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_168_img_000195_not_infected.jpg",
+    "area_cm2": 7.954370769760238,
+    "pixels_per_cm": 62.243250414982526,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_238_img_000365_infected.jpg",
+    "area_cm2": 39.00814426992437,
+    "pixels_per_cm": 41.46082488325576,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_089_img_000373_not_infected.jpg",
+    "area_cm2": 27.714555765595463,
+    "pixels_per_cm": 23.0,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_159_img_000173_not_infected.jpg",
+    "area_cm2": 8.263139665771927,
+    "pixels_per_cm": 151.9802618763371,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_133_img_000111_not_infected.jpg",
+    "area_cm2": 5.261666666666667,
+    "pixels_per_cm": 60.0,
+    "marker_detected": false
+  },
+  {
+    "image": "images/task_123_img_000080_not_infected.jpg",
+    "area_cm2": 33.15631300403226,
+    "pixels_per_cm": 41.994708661396324,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_235_img_000351_infected.jpg",
+    "area_cm2": 14.423963133640553,
+    "pixels_per_cm": 32.93933818400121,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_239_img_000368_infected.jpg",
+    "area_cm2": 9.576017837971756,
+    "pixels_per_cm": 36.680300495558164,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_123_img_000082_not_infected.jpg",
+    "area_cm2": 24.79908628920486,
+    "pixels_per_cm": 46.52478431498158,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_106_img_000004_not_infected.jpg",
+    "area_cm2": 24.325768457339848,
+    "pixels_per_cm": 34.06366588218792,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_142_img_000143_infected.jpg",
+    "area_cm2": 9.77206168200078,
+    "pixels_per_cm": 41.411216945278106,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_213_img_000302_infected.jpg",
+    "area_cm2": 18.38060968707043,
+    "pixels_per_cm": 37.069004722424246,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_182_img_000230_not_infected.jpg",
+    "area_cm2": 7.821717990275525,
+    "pixels_per_cm": 49.678969393496885,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_134_img_000113_infected.jpg",
+    "area_cm2": 25.200989303682416,
+    "pixels_per_cm": 51.26510617477653,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_179_img_000215_not_infected.jpg",
+    "area_cm2": 7.399627758574847,
+    "pixels_per_cm": 61.326992425847855,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_084_img_000371_not_infected.jpg",
+    "area_cm2": 41.142022019421255,
+    "pixels_per_cm": 101.30975602905511,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_226_img_000333_not_infected.jpg",
+    "area_cm2": 28.291289966923927,
+    "pixels_per_cm": 38.88015775002291,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_129_img_000102_infected.jpg",
+    "area_cm2": 22.90128243364151,
+    "pixels_per_cm": 51.06749346589168,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_204_img_000288_not_infected.jpg",
+    "area_cm2": 9.694528698086796,
+    "pixels_per_cm": 43.645032808887755,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_109_img_000014_not_infected.jpg",
+    "area_cm2": 7.891666666666667,
+    "pixels_per_cm": 60.0,
+    "marker_detected": false
+  },
+  {
+    "image": "images/task_217_img_000309_infected.jpg",
+    "area_cm2": 34.472947257803405,
+    "pixels_per_cm": 108.33435896950391,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_192_img_000259_infected.jpg",
+    "area_cm2": 22.137931034482758,
+    "pixels_per_cm": 25.638512697372548,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_135_img_000120_not_infected.jpg",
+    "area_cm2": 57.76542349250611,
+    "pixels_per_cm": 43.73404470966145,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_134_img_000112_infected.jpg",
+    "area_cm2": 38.535599649839504,
+    "pixels_per_cm": 47.798186855430686,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_116_img_000048_not_infected.jpg",
+    "area_cm2": 199.90854870775348,
+    "pixels_per_cm": 12.948616399703354,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_109_img_000016_not_infected.jpg",
+    "area_cm2": 27.244589386302998,
+    "pixels_per_cm": 47.42010825237187,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_110_img_000017_infected.jpg",
+    "area_cm2": 3.2797222222222224,
+    "pixels_per_cm": 60.0,
+    "marker_detected": false
+  },
+  {
+    "image": "images/task_179_img_000217_not_infected.jpg",
+    "area_cm2": 16.099151368202282,
+    "pixels_per_cm": 35.82054035202584,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_214_img_000303_infected.jpg",
+    "area_cm2": 1.797381706169248,
+    "pixels_per_cm": 36.03547634700498,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_116_img_000045_not_infected.jpg",
+    "area_cm2": 12.283888888888889,
+    "pixels_per_cm": 60.0,
+    "marker_detected": false
+  },
+  {
+    "image": "images/task_200_img_000280_infected.jpg",
+    "area_cm2": 12.70807662148538,
+    "pixels_per_cm": 31.4942675559996,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_234_img_000347_infected.jpg",
+    "area_cm2": 0.5081844841375633,
+    "pixels_per_cm": 45.649631859292015,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_118_img_000053_not_infected.jpg",
+    "area_cm2": 15.92458277307601,
+    "pixels_per_cm": 53.00524083103062,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_121_img_000072_not_infected.jpg",
+    "area_cm2": 32.72555555555556,
+    "pixels_per_cm": 60.0,
+    "marker_detected": false
+  },
+  {
+    "image": "images/task_134_img_000115_infected.jpg",
+    "area_cm2": 35.56290917747888,
+    "pixels_per_cm": 52.91817583149794,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_137_img_000126_not_infected.jpg",
+    "area_cm2": 35.58868834964971,
+    "pixels_per_cm": 48.936466747996604,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_142_img_000141_infected.jpg",
+    "area_cm2": 16.866908650937688,
+    "pixels_per_cm": 40.65710270051225,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_109_img_000013_not_infected.jpg",
+    "area_cm2": 28.386003221764813,
+    "pixels_per_cm": 55.71255593570348,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_118_img_000058_not_infected.jpg",
+    "area_cm2": 32.22374519278178,
+    "pixels_per_cm": 47.471628954098,
+    "marker_detected": true
+  },
+  {
+    "image": "images/task_226_img_000328_not_infected.jpg",
+    "area_cm2": 48.39358880556064,
+    "pixels_per_cm": 85.37759268879238,
+    "marker_detected": true
+  }
+]

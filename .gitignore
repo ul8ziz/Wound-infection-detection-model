@@ -182,6 +182,9 @@ cython_debug/
 /.venv_cuda
 
 # Do not commit a full upstream CVAT git clone into this repo; default clone path is ../cvat (sibling of repo root).
-/docs/Преддипломная практика 2 к. маг (01.04.02, 02.04.02, 09.04.03 каф. ММиИИ)
 /experiments/maskrcnn/checkpoints
 /experiments/YOLO11m_UNetPP/checkpoints
+# Large generated image folders (keep labels/json in git; regenerate images locally)
+data/wound_focus_clean/augmented_marker/images/
+**/*.pt
+data/wound_focus_clean/cvat_import_wound_only.zip

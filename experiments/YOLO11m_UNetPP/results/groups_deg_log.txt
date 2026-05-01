@@ -1,4 +1,0 @@
-OK: group_D_boundary_loss
-OK: group_E_multiscale
-OK: group_G_boundary_refine
-ALL GROUPS COMPLETE

@@ -1004,32 +1004,49 @@ def calculate_wound_area(
     marker_size_cm: float = 3.0,
     pixels_per_cm: Optional[float] = None,
 ) -> Tuple[Optional[float], Optional[float]]:
-    """
-    Compute wound area in cm².
-    With marker: use marker area for calibration. Without: use pixels_per_cm if provided.
-    Returns (area_cm2, pixel_to_cm). pixel_to_cm is None when using pixels_per_cm fallback.
+    """Compute wound area in cm².
+
+    All wound instances (label == 1) are union-merged into a single binary
+    mask before computing area, so disjoint or overlapping wound regions are
+    both handled correctly.
+
+    With marker: derive pixel_to_cm from the marker mask area (sqrt approach).
+    Without: use pixels_per_cm if provided.
+
+    Returns:
+        (area_cm2, pixel_to_cm). pixel_to_cm is None when using pixels_per_cm
+        fallback or when calibration is unavailable.
     """
     labels = predictions["labels"].cpu().numpy()
     masks = predictions["masks"].cpu().numpy()
     wound_idx = np.where(labels == 1)[0]
     if len(wound_idx) == 0:
         return None, None
-    wound_mask = masks[wound_idx[0]][0] > 0.5
+
+    # Union of all wound instances (handles disjoint regions correctly)
+    wound_mask = np.zeros(masks.shape[2:], dtype=bool)
+    for idx in wound_idx:
+        wound_mask |= (masks[idx][0] > 0.5)
+
     wound_area_pixels = float(wound_mask.sum())
     if wound_area_pixels == 0:
         return None, None
+
     if marker_class_id is not None:
         marker_idx = np.where(labels == marker_class_id)[0]
         if len(marker_idx) > 0:
             marker_mask = masks[marker_idx[0]][0] > 0.5
             marker_area_pixels = float(marker_mask.sum())
             if marker_area_pixels > 0:
+                # marker is 3×3 cm → side = sqrt(area_px) → pixel_to_cm = side_cm / side_px
                 pixel_to_cm = marker_size_cm / np.sqrt(marker_area_pixels)
                 return wound_area_pixels * (pixel_to_cm ** 2), pixel_to_cm
+
     if pixels_per_cm is not None and pixels_per_cm > 0:
         area_cm2 = wound_area_pixels / (pixels_per_cm ** 2)
         return area_cm2, None
-    # No marker and no pixels_per_cm: return pixels (caller may treat as px)
+
+    # No marker and no pixels_per_cm: return raw pixel count (caller must handle)
     return wound_area_pixels, None
 
 

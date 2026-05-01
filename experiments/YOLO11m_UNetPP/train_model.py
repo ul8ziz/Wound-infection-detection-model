@@ -146,6 +146,10 @@ def train_yolo(config: dict, script_dir: Path) -> dict:
         hsv_h=yolo_cfg.get("hsv_h", 0.015),
         hsv_s=yolo_cfg.get("hsv_s", 0.7),
         hsv_v=yolo_cfg.get("hsv_v", 0.4),
+        dropout=yolo_cfg.get("dropout", 0.0),
+        label_smoothing=yolo_cfg.get("label_smoothing", 0.0),
+        cos_lr=yolo_cfg.get("cos_lr", False),
+        warmup_epochs=yolo_cfg.get("warmup_epochs", 3.0),
         project=str(yolo_project),
         name="train",
         exist_ok=True,
@@ -249,7 +253,7 @@ def predict_yolo(
     num_samples: int = 8,
     conf_thresh: float = 0.5,
 ) -> int:
-    """Save YOLO predictions on test images."""
+    """Save YOLO predictions on test images with area + infection info."""
     yolo_best = script_dir / "checkpoints" / "yolo" / "best.pt"
     if not yolo_best.exists():
         print("[WARNING] No YOLO best.pt — skipping predictions.")
@@ -268,14 +272,78 @@ def predict_yolo(
     pred_dir = script_dir / "results" / "yolo" / "predictions"
     pred_dir.mkdir(parents=True, exist_ok=True)
 
+    combined_cfg = config.get("combined", {})
+    marker_class_id = combined_cfg.get("marker_class_id", 1)
+    marker_real_cm = combined_cfg.get("marker_real_cm", 3.0)
+
+    device = get_device()
+    classifier_path = script_dir / "checkpoints" / "infection" / "infection_classifier.pth"
+
     n = min(num_samples, len(test_images))
     for i in range(n):
         results = model(test_images[i], conf=conf_thresh, verbose=False)
-        if results and len(results) > 0:
-            plot = results[0].plot()
-            fname = Path(test_images[i]).stem
-            out_path = pred_dir / f"pred_{fname}.png"
-            cv2.imwrite(str(out_path), plot)
+        if not results or len(results) == 0:
+            continue
+
+        r = results[0]
+        plot = r.plot()
+
+        area_cm2 = None
+        area_px = 0
+        ppcm: Optional[float] = None
+        infection_label = _parse_infection_from_filename(Path(test_images[i]).name)
+        infection_prob: Optional[float] = None
+
+        try:
+            if r.masks is not None and r.boxes is not None:
+                orig_h, orig_w = r.orig_shape
+                classes = r.boxes.cls.cpu().numpy().astype(int)
+                masks_data = r.masks.data.cpu().numpy()
+
+                ppcm = calculate_pixels_per_cm_from_marker(
+                    r, marker_class_id=marker_class_id, marker_real_cm=marker_real_cm,
+                )
+
+                wound_mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
+                for j, cls in enumerate(classes):
+                    if cls != marker_class_id:
+                        m = masks_data[j]
+                        m_resized = cv2.resize(
+                            m, (orig_w, orig_h),
+                            interpolation=cv2.INTER_NEAREST,
+                        )
+                        wound_mask = np.maximum(
+                            wound_mask, (m_resized > 0.5).astype(np.uint8),
+                        )
+
+                area_px = int(wound_mask.sum())
+                if ppcm is not None:
+                    area_cm2 = calculate_wound_area(wound_mask, ppcm)
+
+                # Infection prediction
+                if classifier_path.exists() and area_px > 0:
+                    image_rgb = cv2.cvtColor(
+                        cv2.imread(test_images[i]), cv2.COLOR_BGR2RGB,
+                    )
+                    try:
+                        inf_result = predict_infection(
+                            image_rgb, wound_mask, classifier_path, device,
+                        )
+                        infection_label = inf_result["predicted"]
+                        infection_prob = inf_result["infected_prob"]
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        plot = draw_info_panel(
+            plot, area_cm2, area_px, ppcm,
+            infection_label, infection_prob,
+        )
+
+        fname = Path(test_images[i]).stem
+        out_path = pred_dir / f"pred_{fname}.png"
+        cv2.imwrite(str(out_path), plot)
 
     print(f"  -> Saved {n} YOLO predictions to {pred_dir}")
     return n
@@ -456,9 +524,11 @@ def train_one_epoch_unet(
     device: torch.device,
     epoch: int,
     print_freq: int = 10,
+    scaler: Optional[torch.amp.GradScaler] = None,
 ) -> float:
-    """Train U-Net++ for one epoch. Returns average loss."""
+    """Train U-Net++ for one epoch with optional AMP. Returns average loss."""
     model.train()
+    use_amp = scaler is not None and device.type == "cuda"
     total_loss = 0.0
     n_batches = 0
     for i, (images, masks) in enumerate(loader):
@@ -466,15 +536,24 @@ def train_one_epoch_unet(
         masks = _mask_to_float01(masks, like=images)
 
         optimizer.zero_grad(set_to_none=True)
-        preds = model(images)
-        loss = criterion(preds, masks)
+
+        with torch.amp.autocast("cuda", enabled=use_amp):
+            preds = model(images)
+            loss = criterion(preds, masks)
 
         if not math.isfinite(loss.item()):
             continue
 
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
+        if use_amp:
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
 
         total_loss += loss.item()
         n_batches += 1
@@ -544,6 +623,118 @@ def evaluate_unet_metrics(
         "iou": iou_sum / n,
         "pixel_accuracy": acc_sum / n,
         "n_samples": n_samples,
+    }
+
+
+@torch.no_grad()
+def evaluate_unet_fullimage(
+    model: nn.Module,
+    config: dict,
+    script_dir: Path,
+    device: torch.device,
+    threshold: float = 0.5,
+    ann_key: str = "ann_test",
+    use_gt_boxes: bool = True,
+) -> Dict[str, float]:
+    """Evaluate U-Net++ on full images (not ROI crops) for fair comparison with combined.
+
+    For each image:
+    1. Load the full image and GT masks
+    2. Use GT bboxes (or YOLO-predicted bboxes) to define ROIs
+    3. Run U-Net++ on each ROI
+    4. Place predicted masks back on the full-image canvas
+    5. Compute full-image Dice vs GT
+    """
+    project_root = script_dir.parent.parent
+    data_root = (project_root / config["data_root"]).resolve()
+    ann_path = (project_root / config[ann_key]).resolve()
+    unet_cfg = config["unet"]
+    image_size = tuple(unet_cfg["input_size"])
+    roi_padding = unet_cfg.get("roi_padding", 0.1)
+
+    import json as _json
+    from pipeline_utils import IMAGENET_MEAN, IMAGENET_STD
+
+    with open(ann_path, "r", encoding="utf-8") as f:
+        coco = _json.load(f)
+
+    img_lookup = {img["id"]: img for img in coco["images"]}
+    anns_by_img: Dict[int, list] = {}
+    for ann in coco["annotations"]:
+        anns_by_img.setdefault(ann["image_id"], []).append(ann)
+
+    model.eval()
+    mean = torch.tensor(IMAGENET_MEAN).view(1, 3, 1, 1).to(device)
+    std = torch.tensor(IMAGENET_STD).view(1, 3, 1, 1).to(device)
+
+    dice_sum, iou_sum = 0.0, 0.0
+    n_images = 0
+    smooth = 1e-6
+
+    for img_id, img_info in img_lookup.items():
+        img_path = data_root / img_info["file_name"]
+        if not img_path.exists():
+            continue
+        image = cv2.imread(str(img_path))
+        if image is None:
+            continue
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        img_h, img_w = image.shape[:2]
+
+        anns = anns_by_img.get(img_id, [])
+        if not anns:
+            continue
+
+        gt_mask = np.zeros((img_h, img_w), dtype=np.uint8)
+        for ann in anns:
+            for seg in ann.get("segmentation", []):
+                if len(seg) < 6:
+                    continue
+                poly = np.array(seg, dtype=np.float32).reshape(-1, 2).astype(np.int32)
+                cv2.fillPoly(gt_mask, [poly], 1)
+
+        pred_mask = np.zeros((img_h, img_w), dtype=np.float32)
+        for ann in anns:
+            bbox = ann.get("bbox", [0, 0, 0, 0])
+            bx, by, bw, bh = bbox
+            x1, y1 = bx, by
+            x2, y2 = bx + bw, by + bh
+
+            pad_x = bw * roi_padding
+            pad_y = bh * roi_padding
+            cx1 = max(0, int(x1 - pad_x))
+            cy1 = max(0, int(y1 - pad_y))
+            cx2 = min(img_w, int(x2 + pad_x))
+            cy2 = min(img_h, int(y2 + pad_y))
+
+            crop = image[cy1:cy2, cx1:cx2]
+            if crop.size == 0:
+                continue
+
+            crop_h, crop_w = crop.shape[:2]
+            uh, uw = image_size
+            crop_resized = cv2.resize(crop, (uw, uh), interpolation=cv2.INTER_LINEAR)
+            t = torch.from_numpy(crop_resized).permute(2, 0, 1).float().unsqueeze(0) / 255.0
+            t = (t.to(device) - mean) / std
+
+            probs = torch.sigmoid(model(t)).squeeze().cpu().numpy()
+            prob_up = cv2.resize(probs.astype(np.float32), (crop_w, crop_h),
+                                 interpolation=cv2.INTER_LINEAR)
+            pred_mask[cy1:cy2, cx1:cx2] = np.maximum(pred_mask[cy1:cy2, cx1:cx2], prob_up)
+
+        pred_bin = (pred_mask >= threshold).astype(np.float32)
+        gt_f = gt_mask.astype(np.float32)
+        inter = (pred_bin * gt_f).sum()
+        union = pred_bin.sum() + gt_f.sum()
+        dice_sum += (2 * inter + smooth) / (union + smooth)
+        iou_sum += (inter + smooth) / (union - inter + smooth)
+        n_images += 1
+
+    n = max(1, n_images)
+    return {
+        "fullimage_dice": dice_sum / n,
+        "fullimage_iou": iou_sum / n,
+        "n_images": n_images,
     }
 
 
@@ -702,13 +893,17 @@ def train_unet(config: dict, script_dir: Path) -> dict:
     print(f"  Results:     {results_dir}")
     print(f"  Config:      {config_snapshot}")
 
+    use_amp = device.type == "cuda" and bool(unet_cfg.get("use_amp", True))
+    scaler = torch.amp.GradScaler("cuda") if use_amp else None
+    if use_amp:
+        print("  Mixed precision training (AMP) enabled")
+
     history = {
         "train_losses": [],
         "val_losses": [],
         "dice_per_epoch": [],
         "iou_per_epoch": [],
     }
-    # Start below any valid Dice in [0, 1] so epoch 1 with val Dice 0.0 still saves best.
     best_dice = -1.0
     best_epoch = 0
     epochs_without_improve = 0
@@ -721,6 +916,7 @@ def train_unet(config: dict, script_dir: Path) -> dict:
 
             train_loss = train_one_epoch_unet(
                 model, train_loader, optimizer, criterion, device, epoch,
+                scaler=scaler,
             )
             val_loss = validate_one_epoch_unet(model, val_loader, criterion, device)
             metrics = evaluate_unet_metrics(model, val_loader, device, threshold=eval_threshold)
@@ -839,11 +1035,118 @@ def save_unet_training_curves(history: dict, results_dir: Path) -> None:
 
 def calculate_wound_area(
     mask: np.ndarray,
-    pixels_per_cm: float = 26.0,
+    pixels_per_cm: float = 60.0,
 ) -> float:
-    """Calculate wound area in cm^2 from a binary mask."""
+    """Calculate wound area in cm² from a binary mask.
+
+    Args:
+        mask: Binary mask (H×W), nonzero pixels = wound.
+        pixels_per_cm: Scale factor derived from the 3×3 cm reference marker.
+
+    Returns:
+        Wound area in cm².
+    """
     wound_pixels = int(mask.sum())
     return wound_pixels / (pixels_per_cm ** 2)
+
+
+def _parse_infection_from_filename(filename: str) -> str:
+    """Infer infection status from filename conventions.
+
+    Returns ``"not_infected"``, ``"infected"``, or ``"unknown"``.
+    """
+    name_lower = filename.lower()
+    if "-not-" in name_lower or "not_infected" in name_lower:
+        return "not_infected"
+    if "infected" in name_lower:
+        return "infected"
+    return "unknown"
+
+
+def draw_info_panel(
+    image: np.ndarray,
+    area_cm2: Optional[float],
+    area_px: int,
+    pixels_per_cm: Optional[float],
+    infection_label: Optional[str] = None,
+    infection_prob: Optional[float] = None,
+) -> np.ndarray:
+    """Draw a unified info panel on the top-left corner of the image.
+
+    Three measurement display cases:
+      - [MEASURED]   — Area in cm² with scale (green text)
+      - [NO SCALE]   — Area in pixels only, cm² unavailable (yellow text)
+
+    Infection status line:
+      - INFECTED      — red text
+      - NOT INFECTED  — green text
+      - UNKNOWN       — grey text
+    """
+    overlay = image.copy()
+    h_img, w_img = overlay.shape[:2]
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = max(0.55, min(w_img / 900, 1.2))
+    thickness = max(1, int(font_scale * 2))
+    line_height = int(28 * font_scale)
+    pad = 8
+
+    lines: list = []
+    colors: list = []
+
+    # Line 1: wound area
+    if area_cm2 is not None and pixels_per_cm is not None:
+        lines.append(f"Wound Area: {area_cm2:.1f} cm2  [measured]")
+        colors.append((100, 255, 100))  # green (BGR)
+    else:
+        lines.append(f"Wound Area: {area_px:,} px  [no scale ref]")
+        colors.append((0, 220, 255))  # yellow (BGR)
+
+    # Line 2: scale info
+    if pixels_per_cm is not None:
+        lines.append(f"Scale: {pixels_per_cm:.1f} px/cm (marker detected)")
+        colors.append((180, 180, 180))  # grey
+    else:
+        lines.append("No reference marker detected")
+        colors.append((0, 180, 255))  # orange-yellow
+
+    # Line 3: infection status
+    if infection_label and infection_label != "unknown":
+        if "not" in infection_label.lower():
+            lines.append("Status: NOT INFECTED")
+            colors.append((100, 255, 100))  # green
+        else:
+            prob_str = f" ({infection_prob:.0%})" if infection_prob is not None and infection_prob >= 0 else ""
+            lines.append(f"Status: INFECTED{prob_str}")
+            colors.append((80, 80, 255))  # red (BGR)
+    elif infection_label == "unknown":
+        lines.append("Status: UNKNOWN")
+        colors.append((180, 180, 180))
+
+    # Compute panel size
+    max_tw = 0
+    total_th = 0
+    for line_text in lines:
+        (tw, th), _ = cv2.getTextSize(line_text, font, font_scale, thickness)
+        max_tw = max(max_tw, tw)
+        total_th += line_height
+
+    panel_w = max_tw + pad * 3
+    panel_h = total_th + pad * 2
+
+    # Semi-transparent black background
+    sub = overlay[pad:pad + panel_h, pad:pad + panel_w]
+    if sub.size > 0:
+        black_bg = np.zeros_like(sub)
+        cv2.addWeighted(sub, 0.35, black_bg, 0.65, 0, sub)
+
+    # Draw text lines
+    y_cursor = pad + pad + int(line_height * 0.75)
+    for text, color in zip(lines, colors):
+        cv2.putText(overlay, text, (pad + pad, y_cursor),
+                    font, font_scale, color, thickness, cv2.LINE_AA)
+        y_cursor += line_height
+
+    return overlay
 
 
 def evaluate_combined(config: dict, script_dir: Path) -> dict:
@@ -854,7 +1157,6 @@ def evaluate_combined(config: dict, script_dir: Path) -> dict:
 
     device = get_device()
     combined_cfg = config.get("combined", {})
-    pixels_per_cm = combined_cfg.get("pixels_per_cm", 26.0)
 
     # Load YOLO
     yolo_best = script_dir / "checkpoints" / "yolo" / "best.pt"
@@ -881,7 +1183,6 @@ def evaluate_combined(config: dict, script_dir: Path) -> dict:
     with open(test_ann_path, "r", encoding="utf-8") as f:
         test_coco = json.load(f)
 
-    # Build GT masks for comparison
     img_lookup = {img["id"]: img for img in test_coco["images"]}
     cat_ids = {c["id"] for c in test_coco["categories"]}
     img_anns: Dict[int, list] = {}
@@ -904,6 +1205,7 @@ def evaluate_combined(config: dict, script_dir: Path) -> dict:
     print(f"  Results dir: {results_combined}")
     print(f"  Config:      {config_snapshot}")
 
+    classifier_path = script_dir / "checkpoints" / "infection" / "infection_classifier.pth"
     num_qual = combined_cfg.get("num_qualitative_samples", 8)
     saved_count = 0
 
@@ -948,13 +1250,38 @@ def evaluate_combined(config: dict, script_dir: Path) -> dict:
         dice_scores.append(dice)
         iou_scores.append(iou)
 
-        effective_ppcm = pred.get("pixels_per_cm") or pixels_per_cm
-        area_cm2 = calculate_wound_area(combined_mask, effective_ppcm)
+        # Area measurement: only when marker is detected
+        ppcm = pred.get("pixels_per_cm")
+        area_px = int(combined_mask.sum())
+        area_cm2 = calculate_wound_area(combined_mask, ppcm) if ppcm else None
+        marker_detected = ppcm is not None
+
+        # Infection classification
+        infection_label = _parse_infection_from_filename(img_info["file_name"])
+        infection_prob: Optional[float] = None
+        if classifier_path.exists() and area_px > 0:
+            try:
+                image_rgb = cv2.cvtColor(
+                    cv2.imread(img_path), cv2.COLOR_BGR2RGB,
+                )
+                inf_result = predict_infection(
+                    image_rgb, combined_mask, classifier_path, device,
+                )
+                infection_label = inf_result["predicted"]
+                infection_prob = inf_result["infected_prob"]
+            except Exception:
+                pass
+
+        quality = "measured" if marker_detected else "unavailable"
         wound_areas.append({
             "image": img_info["file_name"],
+            "area_px": area_px,
             "area_cm2": area_cm2,
-            "pixels_per_cm": effective_ppcm,
-            "marker_detected": pred.get("pixels_per_cm") is not None,
+            "pixels_per_cm": ppcm,
+            "marker_detected": marker_detected,
+            "measurement_quality": quality,
+            "infection": infection_label,
+            "infection_prob": infection_prob,
         })
 
         if saved_count < num_qual:
@@ -974,6 +1301,12 @@ def evaluate_combined(config: dict, script_dir: Path) -> dict:
                         (0, 255, 0),
                         2,
                     )
+
+                overlay = draw_info_panel(
+                    overlay, area_cm2, area_px, ppcm,
+                    infection_label, infection_prob,
+                )
+
                 fname = Path(img_info["file_name"]).stem
                 out = pred_dir / f"combined_{fname}.png"
                 cv2.imwrite(str(out), overlay)
@@ -1454,9 +1787,6 @@ def predict_single_image(
     """
     Predict on a single image and return the annotated image + info dict.
     """
-    combined_cfg = config.get("combined", {})
-    pixels_per_cm = combined_cfg.get("pixels_per_cm", 26.0)
-
     pred = combined_inference(yolo_model, unet_model, image_path, device, config)
     img_bgr = cv2.imread(str(image_path))
     if img_bgr is None:
@@ -1468,8 +1798,7 @@ def predict_single_image(
         "scores": pred.get("scores", []),
     }
 
-    fname = Path(image_path).name.lower()
-    info["infection_filename"] = "not_infected" if "-not-" in fname or "not_infected" in fname else "infected"
+    info["infection_filename"] = _parse_infection_from_filename(Path(image_path).name)
     info["confidence"] = max(pred.get("scores", [0.0]))
 
     classifier_path = Path(image_path).parent.parent / "checkpoints" / "infection" / "infection_classifier.pth"
@@ -1498,22 +1827,18 @@ def predict_single_image(
         )
         text_org = (int(box[0]), max(0, int(box[1]) - 5))
         cv2.putText(
-            overlay,
-            f"{score:.2f}",
-            text_org,
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (0, 255, 0),
-            1,
+            overlay, f"{score:.2f}", text_org,
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1,
         )
 
-    effective_ppcm = pred.get("pixels_per_cm") or pixels_per_cm
-    area_cm2 = calculate_wound_area(combined_mask, effective_ppcm)
+    ppcm = pred.get("pixels_per_cm")
     area_px = int(combined_mask.sum())
-    info["wound_area_cm2"] = round(area_cm2, 2)
+    area_cm2 = calculate_wound_area(combined_mask, ppcm) if ppcm else None
+    info["wound_area_cm2"] = round(area_cm2, 2) if area_cm2 is not None else None
     info["wound_area_px"] = area_px
-    info["pixels_per_cm"] = effective_ppcm
-    info["marker_detected"] = pred.get("pixels_per_cm") is not None
+    info["pixels_per_cm"] = ppcm
+    info["marker_detected"] = ppcm is not None
+    info["measurement_quality"] = "measured" if ppcm else "unavailable"
 
     image_rgb_full = cv2.cvtColor(cv2.imread(str(image_path)), cv2.COLOR_BGR2RGB)
     try:
@@ -1522,13 +1847,16 @@ def predict_single_image(
         )
     except Exception:
         inf_result = {"infected_prob": -1.0, "predicted": "unknown"}
-    info["infection"] = inf_result["predicted"]
+    infection_label = inf_result["predicted"]
+    if inf_result["infected_prob"] < 0:
+        infection_label = info["infection_filename"]
+    info["infection"] = infection_label
     info["infection_prob"] = inf_result["infected_prob"]
 
-    marker_label = " [M]" if info["marker_detected"] else ""
-    inf_label = info["infection"] if inf_result["infected_prob"] >= 0 else info["infection_filename"]
-    cv2.putText(overlay, f"Area: {area_cm2:.1f} cm2{marker_label} | {inf_label}",
-                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+    overlay = draw_info_panel(
+        overlay, area_cm2, area_px, ppcm,
+        infection_label, inf_result["infected_prob"],
+    )
 
     return overlay, info
 

@@ -149,13 +149,24 @@ def augment_dataset(
             masks_per_ann.append(m)
 
         for aug_idx in range(num_augments):
-            combined_mask = np.zeros((h, w), dtype=np.uint8)
-            for m in masks_per_ann:
-                combined_mask = np.maximum(combined_mask, m)
+            additional_targets = {}
+            mask_keys = []
+            for mi, m in enumerate(masks_per_ann):
+                key = f"mask{mi}"
+                additional_targets[key] = "mask"
+                mask_keys.append(key)
 
-            result = pipeline(image=image, mask=combined_mask)
+            aug_pipeline = A.Compose(
+                pipeline.transforms,
+                additional_targets=additional_targets,
+            )
+
+            aug_input = {"image": image}
+            for mi, m in enumerate(masks_per_ann):
+                aug_input[f"mask{mi}"] = m
+
+            result = aug_pipeline(**aug_input)
             aug_img = result["image"]
-            aug_mask = result["mask"]
 
             stem = img_path.stem
             aug_fname = f"{stem}_aug{aug_idx + 1}.jpg"
@@ -173,8 +184,11 @@ def augment_dataset(
             }
             new_images.append(new_img_entry)
 
-            new_polys = _mask_to_polygons(aug_mask)
-            if new_polys:
+            for mi, ann_orig in enumerate(anns):
+                aug_mask = result[f"mask{mi}"]
+                new_polys = _mask_to_polygons(aug_mask)
+                if not new_polys:
+                    continue
                 bbox_mask = (aug_mask > 0).astype(np.uint8)
                 ys, xs = np.where(bbox_mask > 0)
                 if len(xs) > 0:
@@ -186,7 +200,7 @@ def augment_dataset(
                 new_ann = {
                     "id": next_ann_id,
                     "image_id": next_img_id,
-                    "category_id": anns[0]["category_id"],
+                    "category_id": ann_orig["category_id"],
                     "segmentation": new_polys,
                     "bbox": [bx, by, bw, bh],
                     "area": int(aug_mask.sum() / 255),
@@ -226,17 +240,23 @@ def augment_dataset(
 
 
 def main():
+    data_root = PROJECT_ROOT / "data" / "wound_focus_clean"
+    ann_default = str(data_root / "train_wound_only.json")
+
     parser = argparse.ArgumentParser(description="Offline augmentation for wound dataset")
     parser.add_argument("--num-augments", type=int, default=3,
                         help="Number of augmented variants per image (default: 3)")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--dry-run", action="store_true",
                         help="Preview counts without writing files")
+    parser.add_argument("--ann-file", type=str, default=ann_default,
+                        help="Training annotation JSON path")
+    parser.add_argument("--output-dir", type=str, default=None,
+                        help="Output directory (default: data_root/augmented)")
     args = parser.parse_args()
 
-    data_root = PROJECT_ROOT / "data" / "wound_focus_clean"
-    ann_train = data_root / "train_wound_only.json"
-    output_dir = data_root / "augmented"
+    ann_train = Path(args.ann_file)
+    output_dir = Path(args.output_dir) if args.output_dir else data_root / "augmented"
 
     if not ann_train.exists():
         print(f"[ERROR] Training annotation not found: {ann_train}")

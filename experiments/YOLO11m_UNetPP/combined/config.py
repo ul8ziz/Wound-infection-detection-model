@@ -88,6 +88,9 @@ class CombinedInferenceConfig:
     multi_scale_fusion: str = "mean"
     multi_scale_weights: List[float] = field(default_factory=list)
 
+    score_fusion_yolo_weight: float = 0.7
+    """Weight for YOLO confidence in fused score: final = w*yolo + (1-w)*mask_conf."""
+
     debug_save_intermediates: bool = False
     debug_output_dir: str = "results/combined/debug"
     debug_max_images: int = 16
@@ -95,9 +98,12 @@ class CombinedInferenceConfig:
     balanced_score_weights: BalancedScoreWeights = field(default_factory=BalancedScoreWeights)
     """Seven-term balanced score: bbox_AP50, segm_AP50, combined_AP50, bbox_AP75, segm_AP75, mean_dice."""
 
-    # passthrough for area calibration (unchanged)
+    marker_class_id: int = 1
+    """YOLO class index for the 3×3 cm reference marker."""
+
     marker_real_cm: float = 3.0
-    pixels_per_cm: float = 26.0
+    pixels_per_cm: float = 60.0
+    """Fallback pixels-per-cm when marker is not detected."""
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {}
@@ -159,12 +165,14 @@ def combined_config_from_dict(config: Dict[str, Any]) -> CombinedInferenceConfig
         multi_scale_roi_paddings=[float(x) for x in c.get("multi_scale_roi_paddings", [0.0, 0.1, 0.2])],
         multi_scale_fusion=str(c.get("multi_scale_fusion", "mean")),
         multi_scale_weights=[float(x) for x in c.get("multi_scale_weights", [])],
+        score_fusion_yolo_weight=float(c.get("score_fusion_yolo_weight", 0.7)),
         debug_save_intermediates=bool(c.get("debug_save_intermediates", False)),
         debug_output_dir=str(c.get("debug_output_dir", "results/combined/debug")),
         debug_max_images=int(c.get("debug_max_images", 16)),
         balanced_score_weights=weights,
+        marker_class_id=int(c.get("marker_class_id", 1)),
         marker_real_cm=float(c.get("marker_real_cm", 3.0)),
-        pixels_per_cm=float(c.get("pixels_per_cm", 26.0)),
+        pixels_per_cm=float(c.get("pixels_per_cm", 60.0)),
     )
 
 
