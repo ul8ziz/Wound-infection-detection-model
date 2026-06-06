@@ -1,29 +1,5 @@
 {
   "yolo": {
-    "epoch": 50.0,
-    "time": 5613.85,
-    "train/box_loss": 0.57756,
-    "train/seg_loss": 1.23681,
-    "train/cls_loss": 0.33837,
-    "train/dfl_loss": 0.91046,
-    "train/sem_loss": 0.0,
-    "metrics/precision(B)": 0.98239,
-    "metrics/recall(B)": 0.92941,
-    "metrics/mAP50(B)": 0.95217,
-    "metrics/mAP50-95(B)": 0.74091,
-    "metrics/precision(M)": 0.89799,
-    "metrics/recall(M)": 0.84706,
-    "metrics/mAP50(M)": 0.84259,
-    "metrics/mAP50-95(M)": 0.41396,
-    "val/box_loss": 0.84681,
-    "val/seg_loss": 2.43399,
-    "val/cls_loss": 1.53662,
-    "val/dfl_loss": 1.05542,
-    "val/sem_loss": 0.0,
-    "lr/pg0": 5.48838e-05,
-    "lr/pg1": 5.48838e-05,
-    "lr/pg2": 5.48838e-05,
-    "training_completed": true,
     "bbox_mAP50": 0.8619987273830645,
     "bbox_mAP50_95": 0.6249449009109039,
     "segm_mAP50": 0.6751011366336466,
@@ -230,5 +206,5 @@
     },
     "_config_path": "E:\\GitHub\\Wound-infection-detection-model\\experiments\\YOLO11m_UNetPP\\config.yaml"
   },
-  "timestamp": "2026-04-17T21:26:24.074574"
+  "timestamp": "2026-05-24T07:43:16.692012"
 }

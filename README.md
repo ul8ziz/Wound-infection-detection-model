@@ -119,7 +119,8 @@ Wound-infection-detection-model/
 │   ├── DATASET_BUILD_PIPELINE.md              # Full dataset build pipeline (stages 1 & 2)
 │   ├── WOUND_FOCUS_DATASET_DOCUMENTATION.md   # Stage 1: standardization details
 │   ├── DATA_AUGMENTATION_GUIDE.md             # Augmentation guide
-│   └── CVAT_SETUP.md                          # Pointer to cvat/CVAT_SETUP.md
+│   ├── CVAT_SETUP.md                          # Pointer to cvat/CVAT_SETUP.md
+│   └── thesis/                                # Thesis manuscript, figures, and defense presentations
 │
 ├── checkpoints/                   # Saved models (created during training)
 ├── requirements.txt

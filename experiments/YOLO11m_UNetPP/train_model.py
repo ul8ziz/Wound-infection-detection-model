@@ -293,11 +293,22 @@ def predict_yolo(
         ppcm: Optional[float] = None
         infection_label = _parse_infection_from_filename(Path(test_images[i]).name)
         infection_prob: Optional[float] = None
+        confidence: Optional[float] = None
 
         try:
             if r.masks is not None and r.boxes is not None:
                 orig_h, orig_w = r.orig_shape
                 classes = r.boxes.cls.cpu().numpy().astype(int)
+                confidences = r.boxes.conf.cpu().numpy().astype(float)
+                wound_confidences = [
+                    float(conf)
+                    for cls, conf in zip(classes, confidences)
+                    if cls != marker_class_id
+                ]
+                if wound_confidences:
+                    confidence = max(wound_confidences)
+                elif len(confidences) > 0:
+                    confidence = float(confidences.max())
                 masks_data = r.masks.data.cpu().numpy()
 
                 ppcm = calculate_pixels_per_cm_from_marker(
@@ -344,6 +355,20 @@ def predict_yolo(
         fname = Path(test_images[i]).stem
         out_path = pred_dir / f"pred_{fname}.png"
         cv2.imwrite(str(out_path), plot)
+        with open(out_path.with_suffix(".json"), "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "image": Path(test_images[i]).name,
+                    "confidence": confidence,
+                    "wound_area_cm2": area_cm2,
+                    "wound_area_px": area_px,
+                    "infection": infection_label,
+                    "infection_prob": infection_prob,
+                    "marker_detected": ppcm is not None,
+                },
+                f,
+                indent=2,
+            )
 
     print(f"  -> Saved {n} YOLO predictions to {pred_dir}")
     return n
@@ -1310,6 +1335,23 @@ def evaluate_combined(config: dict, script_dir: Path) -> dict:
                 fname = Path(img_info["file_name"]).stem
                 out = pred_dir / f"combined_{fname}.png"
                 cv2.imwrite(str(out), overlay)
+                with open(out.with_suffix(".json"), "w", encoding="utf-8") as f:
+                    json.dump(
+                        {
+                            "image": img_info["file_name"],
+                            "confidence": (
+                                max(pred.get("scores", [0.0]))
+                                if pred.get("scores") else None
+                            ),
+                            "wound_area_cm2": area_cm2,
+                            "wound_area_px": area_px,
+                            "infection": infection_label,
+                            "infection_prob": infection_prob,
+                            "marker_detected": marker_detected,
+                        },
+                        f,
+                        indent=2,
+                    )
                 saved_count += 1
 
     n_full = max(1, len(dice_scores))
@@ -1741,12 +1783,47 @@ def display_results_curves(results_dir: Path, max_show: int = 6) -> None:
 
 def display_results_predictions(results_dir: Path, n_show: int = 8) -> None:
     """Display saved prediction images inline (for notebooks)."""
-    pred_dirs = [
-        results_dir / "yolo" / "predictions",
-        results_dir / "combined" / "predictions",
-    ]
+    def _format_caption(img_path: Path) -> str:
+        meta_path = img_path.with_suffix(".json")
+        meta = {}
+        if meta_path.exists():
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+            except Exception:
+                meta = {}
+
+        confidence = meta.get("confidence")
+        area_cm2 = meta.get("wound_area_cm2")
+        infection = meta.get("infection")
+
+        confidence_text = (
+            f"{float(confidence):.2f}" if confidence is not None else "N/A"
+        )
+        area_text = f"{float(area_cm2):.1f} cm2" if area_cm2 is not None else "N/A"
+        infection_text = str(infection).replace("_", " ") if infection else "N/A"
+        return (
+            f"Confidence: {confidence_text} | "
+            f"Wound area: {area_text} | "
+            f"Infection: {infection_text}"
+        )
+
+    pred_dirs = [results_dir / "yolo" / "predictions"]
+    combined_root = results_dir / "combined"
+    if (combined_root / "predictions").exists():
+        pred_dirs.append(combined_root / "predictions")
+    elif combined_root.exists():
+        pred_dirs.extend(
+            sorted(
+                path for path in combined_root.glob("*/predictions")
+                if path.is_dir()
+            )
+        )
+
     shown = 0
     for pred_dir in pred_dirs:
+        if shown >= n_show:
+            break
         if not pred_dir.exists():
             continue
         pngs = sorted(pred_dir.glob("*.png"))
@@ -1767,14 +1844,28 @@ def display_results_predictions(results_dir: Path, n_show: int = 8) -> None:
             if img is not None:
                 img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                 axes[i].imshow(img)
-            axes[i].set_title(pngs[i].stem, fontsize=8)
+            else:
+                axes[i].text(
+                    0.5, 0.5,
+                    f"Could not read image:\n{pngs[i].name}",
+                    ha="center", va="center",
+                )
+            axes[i].set_title(_format_caption(pngs[i]), fontsize=10)
             axes[i].axis("off")
         for i in range(n, len(axes)):
             axes[i].axis("off")
-        fig.suptitle(f"Predictions from {pred_dir.parent.name}", fontsize=12)
-        fig.tight_layout()
+        fig.suptitle(
+            f"{pred_dir.parent.name.upper()} prediction examples",
+            fontsize=13,
+            fontweight="bold",
+        )
+        fig.tight_layout(rect=(0, 0.0, 1, 0.94))
         plt.show()
         shown += n
+
+    if shown == 0:
+        searched = "\n".join(f"- {path}" for path in pred_dirs)
+        print("No prediction PNG files were found. Searched:\n" + searched)
 
 
 def predict_single_image(

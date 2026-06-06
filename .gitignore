@@ -188,3 +188,4 @@ cython_debug/
 data/wound_focus_clean/augmented_marker/images/
 **/*.pt
 data/wound_focus_clean/cvat_import_wound_only.zip
+/docs

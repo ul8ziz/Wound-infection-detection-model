@@ -4,7 +4,10 @@
 
 # === General ===
 seed: 42
-experiment_name: "best_phase7_finetune_roi20"  # Best result: fine-tuned B1@512 + ROI-0.20 + yolo_thresh=0.25 → Dice=0.770
+# Legacy experiment slug kept for continuity with Phase 7 result folders/checkpoints.
+# The active config below is a post-Phase7 tuned variant, not an exact copy of the
+# benchmark recipe documented in reports/final_improvement_report.md.
+experiment_name: "best_phase7_finetune_roi20"
 # Main data root: val/test images + labels (unchanged splits)
 data_root: "data/wound_focus_clean"
 # Offline-augmented training set (~4× images). Labels + images under this folder.
@@ -21,7 +24,7 @@ classes: ["wound", "marker"]
 # === YOLO11m-seg (Stage 1: Detection + Coarse Segmentation) ===
 yolo:
   model: "yolo11m-seg.pt"
-  image_size: 768
+  image_size: 768                   # Active post-Phase7 setting; historical Phase 7 benchmark used 1024
   batch_size: 2
   epochs: 50
   lr0: 0.005                       # halved (was 0.01) — reduce early cls_loss spike
@@ -69,7 +72,7 @@ unet:
   loss_type: "focal_dice_boundary"
   loss_bce_weight: 0.4
   loss_dice_weight: 0.6
-  loss_boundary_weight: 0.35     # stronger edge emphasis (was 0.20) — sharper contours for AP75
+  loss_boundary_weight: 0.35     # Active post-Phase7 value; historical Phase 7 benchmark used 0.20
   boundary_kernel_size: 3         # finer edge detection (was 5) — sub-pixel boundary detail
   focal_alpha: 0.25
   focal_gamma: 2.0
@@ -95,9 +98,11 @@ unet:
   
 # === Combined Inference (YOLO + U-Net++ on full images) ===
 # ``combined.roi_padding`` is independent: expands YOLO boxes at inference only.
-# Tuned defaults (val, partial grid — see results/combined/tuning/best_config_val.json; re-run scripts/tune_combined.py for full search):
+# Active defaults combine the earlier tuning sweep with later post-Phase7 tweaks.
+# They are not a byte-for-byte copy of the historical Phase 7 benchmark recipe.
+# See results/combined/tuning/best_config_val.json and reports/final_improvement_report.md.
 combined:
-  yolo_conf_thresh: 0.15           # lowered (was 0.25) — reduce missed detections, rely on merge_overlapping to handle duplicates
+  yolo_conf_thresh: 0.15           # Active post-Phase7 value; historical Phase 7 benchmark used 0.25
   yolo_min_conf_inference: 0.001   # Ultralytics conf= (low); filter with yolo_conf_thresh in Python)
   unet_mask_thresh: 0.40           # tuned (was 0.25) — tune_combined.py Stage C best
   roi_padding: 0.20                # matched to training roi_padding
@@ -109,8 +114,8 @@ combined:
   postprocess_preset: "largest_then_fill"  # tuned (was none) — tune_combined.py Stage B best
   postprocess: []                  # optional ordered ops; see combined/postprocess.py
   refinement_postprocess: "boundary_refine"  # sharpen mask edges (was none)
-  enable_tta: false                # disabled (was true) — TTA smooths edges, hurts AP75 and Phase4 recovery
-  multi_scale_refinement: false    # disabled (was true) — same reason as TTA
+  enable_tta: false                # Active post-Phase7 value; historical Phase 7 benchmark enabled TTA
+  multi_scale_refinement: false    # Active post-Phase7 value; historical Phase 7 benchmark enabled this
   multi_scale_roi_paddings: [0.10, 0.20, 0.30]
   multi_scale_fusion: "mean"      # mean | weighted_mean | stability_select
   multi_scale_weights: []         # optional weights aligned to multi_scale_roi_paddings

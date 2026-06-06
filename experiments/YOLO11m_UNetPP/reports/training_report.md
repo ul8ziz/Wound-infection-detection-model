@@ -1,6 +1,6 @@
 # YOLO11m + U-Net++ Training Report
 
-Generated: 2026-04-17 21:26:24
+Generated: 2026-05-24 07:43:16
 
 ---
 
@@ -110,30 +110,6 @@ Generated: 2026-04-17 21:26:24
 
 | Metric | Value |
 |--------|-------|
-| epoch | 50.0000 |
-| time | 5613.8500 |
-| train/box_loss | 0.5776 |
-| train/seg_loss | 1.2368 |
-| train/cls_loss | 0.3384 |
-| train/dfl_loss | 0.9105 |
-| train/sem_loss | 0.0000 |
-| metrics/precision(B) | 0.9824 |
-| metrics/recall(B) | 0.9294 |
-| metrics/mAP50(B) | 0.9522 |
-| metrics/mAP50-95(B) | 0.7409 |
-| metrics/precision(M) | 0.8980 |
-| metrics/recall(M) | 0.8471 |
-| metrics/mAP50(M) | 0.8426 |
-| metrics/mAP50-95(M) | 0.4140 |
-| val/box_loss | 0.8468 |
-| val/seg_loss | 2.4340 |
-| val/cls_loss | 1.5366 |
-| val/dfl_loss | 1.0554 |
-| val/sem_loss | 0.0000 |
-| lr/pg0 | 0.0001 |
-| lr/pg1 | 0.0001 |
-| lr/pg2 | 0.0001 |
-| training_completed | True |
 | bbox_mAP50 | 0.8620 |
 | bbox_mAP50_95 | 0.6249 |
 | segm_mAP50 | 0.6751 |
