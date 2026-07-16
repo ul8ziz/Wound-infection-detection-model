@@ -1,0 +1,13 @@
+{
+  "image": "images/task_109_img_000016_not_infected.jpg",
+  "confidence": 0.6966169655323029,
+  "wound_area_cm2": 58.38268656716418,
+  "wound_area_px": 130388,
+  "dice": 0.642909,
+  "iou": 0.473741,
+  "metadata_infection": "not_infected",
+  "infection": "non_infected",
+  "infection_prob": 0.2168264389038086,
+  "prediction_outcome": "TN",
+  "marker_detected": true
+}

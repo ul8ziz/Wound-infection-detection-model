@@ -1,0 +1,14 @@
+{
+  "label": "legacy_90mb_candidate_1024",
+  "evaluated_at_utc": "2026-07-16T02:58:32.685599+00:00",
+  "checkpoint": "E:\\GitHub\\Wound-infection-detection-model\\experiments\\YOLO11m_UNetPP\\checkpoints\\yolo\\train\\weights\\best.pt",
+  "checkpoint_sha256": "571481065e63af441fe63faa48c4df5789944c566397db582fd32de447a54189",
+  "checkpoint_size_bytes": 90016272,
+  "data": "E:\\GitHub\\Wound-infection-detection-model\\experiments\\YOLO11m_UNetPP\\yolo_data\\dataset.yaml",
+  "image_size": 1024,
+  "bbox_mAP50": 0.6190161634135809,
+  "bbox_mAP50_95": 0.3506778318907996,
+  "segm_mAP50": 0.5446376082820183,
+  "segm_mAP50_95": 0.20433124089584576,
+  "note": "Checkpoint gate only. This result is not paper-citable unless the data-integrity audit for the evaluated split passes."
+}

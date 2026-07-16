@@ -1,0 +1,92 @@
+{
+  "status": "pass",
+  "config_path": "E:\\GitHub\\Wound-infection-detection-model\\experiments\\YOLO11m_UNetPP\\config.yaml",
+  "splits": {
+    "train": {
+      "split": "train",
+      "annotation_path": "E:\\GitHub\\Wound-infection-detection-model\\data\\wound_focus_clean\\paper_split\\train_wound_marker_grouped.json",
+      "image_root": "E:\\GitHub\\Wound-infection-detection-model\\data\\wound_focus_clean",
+      "n_images": 253,
+      "n_unique_sources": 253,
+      "n_tasks": 120,
+      "categories": [
+        "marker",
+        "wound"
+      ],
+      "annotation_count_by_category_id": {
+        "2": 219,
+        "1": 360
+      },
+      "n_original_images_hashed": 253,
+      "n_missing_images": 0,
+      "missing_images": []
+    },
+    "val": {
+      "split": "val",
+      "annotation_path": "E:\\GitHub\\Wound-infection-detection-model\\data\\wound_focus_clean\\paper_split\\val_wound_marker_grouped.json",
+      "image_root": "E:\\GitHub\\Wound-infection-detection-model\\data\\wound_focus_clean",
+      "n_images": 59,
+      "n_unique_sources": 59,
+      "n_tasks": 6,
+      "categories": [
+        "marker",
+        "wound"
+      ],
+      "annotation_count_by_category_id": {
+        "1": 97,
+        "2": 53
+      },
+      "n_original_images_hashed": 59,
+      "n_missing_images": 0,
+      "missing_images": []
+    },
+    "test": {
+      "split": "test",
+      "annotation_path": "E:\\GitHub\\Wound-infection-detection-model\\data\\wound_focus_clean\\paper_split\\test_wound_marker_grouped.json",
+      "image_root": "E:\\GitHub\\Wound-infection-detection-model\\data\\wound_focus_clean",
+      "n_images": 57,
+      "n_unique_sources": 57,
+      "n_tasks": 10,
+      "categories": [
+        "marker",
+        "wound"
+      ],
+      "annotation_count_by_category_id": {
+        "1": 75,
+        "2": 51
+      },
+      "n_original_images_hashed": 57,
+      "n_missing_images": 0,
+      "missing_images": []
+    }
+  },
+  "pairwise": {
+    "train_vs_val": {
+      "source_overlap_count": 0,
+      "source_overlap_examples": [],
+      "task_overlap_count": 0,
+      "task_overlap_examples": [],
+      "content_hash_overlap_count": 0
+    },
+    "train_vs_test": {
+      "source_overlap_count": 0,
+      "source_overlap_examples": [],
+      "task_overlap_count": 0,
+      "task_overlap_examples": [],
+      "content_hash_overlap_count": 0
+    },
+    "val_vs_test": {
+      "source_overlap_count": 0,
+      "source_overlap_examples": [],
+      "task_overlap_count": 0,
+      "task_overlap_examples": [],
+      "content_hash_overlap_count": 0
+    }
+  },
+  "critical_issues": [],
+  "warnings": [],
+  "patient_grouping": {
+    "available": false,
+    "note": "No verified patient identifier is present in COCO metadata. CVAT task is audited as a conservative source-group proxy."
+  }
+}

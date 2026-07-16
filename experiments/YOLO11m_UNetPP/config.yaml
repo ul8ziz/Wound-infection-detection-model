@@ -4,17 +4,17 @@
 
 # === General ===
 seed: 42
-# Legacy experiment slug kept for continuity with Phase 7 result folders/checkpoints.
-# The active config below is a post-Phase7 tuned variant, not an exact copy of the
-# benchmark recipe documented in reports/final_improvement_report.md.
-experiment_name: "best_phase7_finetune_roi20"
-# Main data root: val/test images + labels (unchanged splits)
+experiment_name: "paper_grouped_phase7_locked"
+# Explicit execution policy used by the notebook.
+run:
+  mode: "evaluate_only"            # train_from_scratch | resume | evaluate_only
+  allow_legacy_checkpoints: false
+# Paper dataset: original images only, grouped by CVAT task to prevent source leakage.
 data_root: "data/wound_focus_clean"
-# Offline-augmented training set (~4× images). Labels + images under this folder.
-data_root_train: "data/wound_focus_clean/augmented_marker"
-ann_train: "data/wound_focus_clean/augmented_marker/train_augmented.json"
-ann_val: "data/wound_focus_clean/val_wound_only.json"
-ann_test: "data/wound_focus_clean/test_wound_only.json"
+data_root_train: "data/wound_focus_clean"
+ann_train: "data/wound_focus_clean/paper_split/train_wound_marker_grouped.json"
+ann_val: "data/wound_focus_clean/paper_split/val_wound_marker_grouped.json"
+ann_test: "data/wound_focus_clean/paper_split/test_wound_marker_grouped.json"
 num_workers: 2   # Windows-safe default; increase on Linux
 # Class list for YOLO training.  Options:
 #   ["wound"]            — wound-only mode (default, single-class)
@@ -24,30 +24,29 @@ classes: ["wound", "marker"]
 # === YOLO11m-seg (Stage 1: Detection + Coarse Segmentation) ===
 yolo:
   model: "yolo11m-seg.pt"
-  image_size: 768                   # Active post-Phase7 setting; historical Phase 7 benchmark used 1024
+  image_size: 1024
   batch_size: 2
-  epochs: 50
-  lr0: 0.005                       # halved (was 0.01) — reduce early cls_loss spike
+  epochs: 80
+  lr0: 0.01
   lrf: 0.01
   optimizer: "SGD"
   momentum: 0.937
-  weight_decay: 0.001              # doubled (was 0.0005) — resist overfitting
-  patience: 12                     # stop earlier if overfitting (was 20)
+  weight_decay: 0.0005
+  patience: 20
   degrees: 7
   perspective: 0.0
   flipud: 0.3
   fliplr: 0.5
-  mosaic: 0.5                     # more diversity (was 0.3)
+  mosaic: 0.3
   mixup: 0.0
   close_mosaic: 15
   hsv_h: 0.01
   hsv_s: 0.5
-  hsv_v: 0.4                      # more brightness variety (was 0.3)
-  # --- Regularization (new) ---
-  dropout: 0.1                    # head dropout — effective against overfitting
-  label_smoothing: 0.1            # soften cls targets — reduce cls_loss gap
-  cos_lr: true                    # cosine LR schedule — smoother convergence
-  warmup_epochs: 5                # stable start before full LR
+  hsv_v: 0.3
+  dropout: 0.0
+  label_smoothing: 0.0
+  cos_lr: true
+  warmup_epochs: 3
 
 # === U-Net++ (Stage 2: Refined Segmentation on ROI crops) ===
 # Default below is a "fast training" preset (shorter wall-clock). For maximum ROI
@@ -61,19 +60,19 @@ unet:
   in_channels: 3
   classes: 1
   batch_size: 4                    # halved for 512x512 GPU memory
-  epochs: 60
-  lr: 0.00003                     # fine-tune from best checkpoint (was 0.0001 from scratch)
-  weight_decay: 0.0005            # stronger regularization (was 0.0001) — resist mild overfitting
+  epochs: 80
+  lr: 0.0001
+  weight_decay: 0.0001
   optimizer: "AdamW"
   scheduler: "CosineAnnealingLR"
-  scheduler_T_max: 55             # aligned to fine-tune epochs
+  scheduler_T_max: 75
   scheduler_eta_min: 0.000001
-  early_stop_patience: 10         # stop early if no improvement (was 15) — fine-tune converges faster
+  early_stop_patience: 15
   loss_type: "focal_dice_boundary"
   loss_bce_weight: 0.4
   loss_dice_weight: 0.6
-  loss_boundary_weight: 0.35     # Active post-Phase7 value; historical Phase 7 benchmark used 0.20
-  boundary_kernel_size: 3         # finer edge detection (was 5) — sub-pixel boundary detail
+  loss_boundary_weight: 0.20
+  boundary_kernel_size: 5
   focal_alpha: 0.25
   focal_gamma: 2.0
   roi_padding: 0.20
@@ -91,7 +90,7 @@ unet:
   eval_yolo_roi_cache_path: "experiments/YOLO11m_UNetPP/results/roi_cache/val_yolo_rois.json"
   test_yolo_roi_cache_path: "experiments/YOLO11m_UNetPP/results/roi_cache/test_yolo_rois.json"
   yolo_match_iou_min: 0.05
-  resume_checkpoint: "experiments/YOLO11m_UNetPP/checkpoints/unet/best_phase7_finetune_roi20/best_model.pth"  # fine-tune from best Phase7
+  resume_checkpoint: null
   freeze_encoder: false
   # Batch-size guidance for resolution sweeps (adjust for your GPU):
   #   256 -> 16, 384 -> 8, 512 -> 4
@@ -102,20 +101,20 @@ unet:
 # They are not a byte-for-byte copy of the historical Phase 7 benchmark recipe.
 # See results/combined/tuning/best_config_val.json and reports/final_improvement_report.md.
 combined:
-  yolo_conf_thresh: 0.15           # Active post-Phase7 value; historical Phase 7 benchmark used 0.25
+  yolo_conf_thresh: 0.25
   yolo_min_conf_inference: 0.001   # Ultralytics conf= (low); filter with yolo_conf_thresh in Python)
   unet_mask_thresh: 0.40           # tuned (was 0.25) — tune_combined.py Stage C best
   roi_padding: 0.20                # matched to training roi_padding
-  mask_upscale: "nearest_binary"   # sharper edges (was linear_probs) — improves segm_AP75
-  bbox_selection_strategy: "merge_overlapping"  # merge duplicate detections (was all_above_thresh)
-  merge_iou_thresh: 0.3            # more aggressive merging (was 0.5) — fixes duplicate wound boxes
+  mask_upscale: "linear_probs"
+  bbox_selection_strategy: "all_above_thresh"
+  merge_iou_thresh: 0.5
   coco_bbox_mode: "yolo_xyxy"      # tuned — stable across stages
   min_mask_area: 0                 # tuned (was 100) — tune_combined.py Stage B best
   postprocess_preset: "largest_then_fill"  # tuned (was none) — tune_combined.py Stage B best
   postprocess: []                  # optional ordered ops; see combined/postprocess.py
-  refinement_postprocess: "boundary_refine"  # sharpen mask edges (was none)
-  enable_tta: false                # Active post-Phase7 value; historical Phase 7 benchmark enabled TTA
-  multi_scale_refinement: false    # Active post-Phase7 value; historical Phase 7 benchmark enabled this
+  refinement_postprocess: "none"
+  enable_tta: true
+  multi_scale_refinement: true
   multi_scale_roi_paddings: [0.10, 0.20, 0.30]
   multi_scale_fusion: "mean"      # mean | weighted_mean | stability_select
   multi_scale_weights: []         # optional weights aligned to multi_scale_roi_paddings
@@ -135,3 +134,12 @@ combined:
   marker_class_id: 1              # YOLO class index for the 3x3 cm marker
   marker_real_cm: 3.0
   num_qualitative_samples: 8
+
+# === Infection metadata classifier (exploratory, non-clinical) ===
+infection:
+  seeds: [42, 43, 44]
+  epochs: 200
+  early_stop_patience: 25
+  lr: 0.001
+  weight_decay: 0.0001
+  bootstrap_samples: 2000

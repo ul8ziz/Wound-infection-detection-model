@@ -1,0 +1,19 @@
+{
+  "archive": "E:\\GitHub\\Wound-infection-detection-model\\experiments\\YOLO11m_UNetPP\\paper_artifacts\\paper_grouped_phase7_locked_20260716",
+  "copied_checkpoints": true,
+  "files": [
+    "checkpoints/infection_classifier.pth",
+    "checkpoints/unet_best_model.pth",
+    "checkpoints/yolo_best.pt",
+    "config.yaml",
+    "experiment_manifest.json",
+    "experiment_manifest.yaml",
+    "reports/training_report.md",
+    "results/figures/experiment_gallery_4panel.png",
+    "results/figures/training_curves_dashboard.png",
+    "results/infection/metrics_summary.json",
+    "results/infection/training_history.json",
+    "results/metrics_summary.json",
+    "results/yolo/test_metrics.json"
+  ]
+}

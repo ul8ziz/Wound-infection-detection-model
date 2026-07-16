@@ -1,0 +1,21 @@
+{
+  "evaluation_note": "train_* metrics are in-sample (train split only). test_* metrics are independent (held-out test split, never seen during training). Labels are derived from filename metadata (-not-), not confirmed clinical diagnosis.",
+  "train_n_samples": 1494,
+  "train_n_infected": 629,
+  "train_n_non_infected": 865,
+  "train_accuracy": 0.697456,
+  "train_precision": 0.620408,
+  "train_recall": 0.72496,
+  "train_f1_score": 0.668622,
+  "test_n_samples": 54,
+  "test_n_infected": 22,
+  "test_n_non_infected": 32,
+  "test_accuracy": 0.666667,
+  "test_precision": 0.583333,
+  "test_recall": 0.636364,
+  "test_f1_score": 0.608696,
+  "test_tp": 14,
+  "test_fp": 10,
+  "test_fn": 8,
+  "test_tn": 22
+}

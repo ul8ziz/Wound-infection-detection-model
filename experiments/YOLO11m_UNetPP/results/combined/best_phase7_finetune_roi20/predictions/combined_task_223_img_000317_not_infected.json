@@ -1,9 +1,13 @@
 {
   "image": "images/task_223_img_000317_not_infected.jpg",
   "confidence": 0.05,
-  "wound_area_cm2": 42.99199951876804,
-  "wound_area_px": 79411,
-  "infection": "infected",
-  "infection_prob": 0.5493068099021912,
+  "wound_area_cm2": 37.10929980750721,
+  "wound_area_px": 68545,
+  "dice": 0.190429,
+  "iou": 0.105234,
+  "metadata_infection": "not_infected",
+  "infection": "non_infected",
+  "infection_prob": 0.29970598220825195,
+  "prediction_outcome": "TN",
   "marker_detected": true
 }

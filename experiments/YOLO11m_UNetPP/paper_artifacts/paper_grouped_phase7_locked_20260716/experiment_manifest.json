@@ -1,0 +1,189 @@
+{
+  "schema_version": 1,
+  "created_at_utc": "2026-07-16T18:00:18.029482+00:00",
+  "run_mode": "evaluate_only",
+  "config_fingerprint": "c10c4d8f2ee3993a845d45271ad087ae31c8fa07200a396b3428c1224d00f4a5",
+  "config": {
+    "seed": 42,
+    "experiment_name": "paper_grouped_phase7_locked",
+    "classes": [
+      "wound",
+      "marker"
+    ],
+    "yolo": {
+      "model": "yolo11m-seg.pt",
+      "image_size": 1024,
+      "batch_size": 2,
+      "epochs": 80,
+      "lr0": 0.01,
+      "lrf": 0.01,
+      "optimizer": "SGD",
+      "momentum": 0.937,
+      "weight_decay": 0.0005,
+      "patience": 20,
+      "degrees": 7,
+      "perspective": 0.0,
+      "flipud": 0.3,
+      "fliplr": 0.5,
+      "mosaic": 0.3,
+      "mixup": 0.0,
+      "close_mosaic": 15,
+      "hsv_h": 0.01,
+      "hsv_s": 0.5,
+      "hsv_v": 0.3,
+      "dropout": 0.0,
+      "label_smoothing": 0.0,
+      "cos_lr": true,
+      "warmup_epochs": 3
+    },
+    "unet": {
+      "architecture": "unetplusplus",
+      "encoder": "efficientnet-b1",
+      "encoder_weights": "imagenet",
+      "input_size": [
+        512,
+        512
+      ],
+      "in_channels": 3,
+      "classes": 1,
+      "batch_size": 4,
+      "epochs": 80,
+      "lr": 0.0001,
+      "weight_decay": 0.0001,
+      "optimizer": "AdamW",
+      "scheduler": "CosineAnnealingLR",
+      "scheduler_T_max": 75,
+      "scheduler_eta_min": 1e-06,
+      "early_stop_patience": 15,
+      "loss_type": "focal_dice_boundary",
+      "loss_bce_weight": 0.4,
+      "loss_dice_weight": 0.6,
+      "loss_boundary_weight": 0.2,
+      "boundary_kernel_size": 5,
+      "focal_alpha": 0.25,
+      "focal_gamma": 2.0,
+      "roi_padding": 0.2,
+      "roi_crop_mode": "mixed",
+      "eval_roi_crop_mode": "yolo_predicted",
+      "roi_mix_weights": {
+        "gt": 0.45,
+        "jitter": 0.3,
+        "yolo_cached": 0.25
+      },
+      "roi_jitter": {
+        "scale_min": 0.85,
+        "scale_max": 1.15,
+        "shift_frac": 0.1
+      },
+      "yolo_roi_cache_path": "experiments/YOLO11m_UNetPP/results/roi_cache/train_yolo_rois.json",
+      "eval_yolo_roi_cache_path": "experiments/YOLO11m_UNetPP/results/roi_cache/val_yolo_rois.json",
+      "test_yolo_roi_cache_path": "experiments/YOLO11m_UNetPP/results/roi_cache/test_yolo_rois.json",
+      "yolo_match_iou_min": 0.05,
+      "resume_checkpoint": null,
+      "freeze_encoder": false
+    },
+    "combined": {
+      "yolo_conf_thresh": 0.25,
+      "yolo_min_conf_inference": 0.001,
+      "unet_mask_thresh": 0.4,
+      "roi_padding": 0.2,
+      "mask_upscale": "linear_probs",
+      "bbox_selection_strategy": "all_above_thresh",
+      "merge_iou_thresh": 0.5,
+      "coco_bbox_mode": "yolo_xyxy",
+      "min_mask_area": 0,
+      "postprocess_preset": "largest_then_fill",
+      "postprocess": [],
+      "refinement_postprocess": "none",
+      "enable_tta": true,
+      "multi_scale_refinement": true,
+      "multi_scale_roi_paddings": [
+        0.1,
+        0.2,
+        0.3
+      ],
+      "multi_scale_fusion": "mean",
+      "multi_scale_weights": [],
+      "score_fusion_yolo_weight": 0.7,
+      "debug_save_intermediates": false,
+      "debug_output_dir": "results/combined/debug",
+      "debug_max_images": 16,
+      "balanced_score_weights": {
+        "bbox_AP50": 0.25,
+        "segm_AP50": 0.2,
+        "combined_AP50": 0.2,
+        "bbox_AP75": 0.15,
+        "segm_AP75": 0.15,
+        "mean_dice": 0.05
+      },
+      "marker_class_id": 1,
+      "marker_real_cm": 3.0,
+      "num_qualitative_samples": 8
+    }
+  },
+  "annotations": {
+    "train": {
+      "path": "E:\\GitHub\\Wound-infection-detection-model\\data\\wound_focus_clean\\paper_split\\train_wound_marker_grouped.json",
+      "exists": true,
+      "sha256": "19cf4ec50378f2b329b9221bc0bd4a4bd0e9dce79a7c1d04d4f66a731dd75d11",
+      "n_images": 253,
+      "n_annotations": 579,
+      "categories": [
+        "marker",
+        "wound"
+      ],
+      "image_membership_sha256": "4b09cfd93cab045a2cabfb4ac79a8f824bca973d1c36f188aeffe05884741129"
+    },
+    "val": {
+      "path": "E:\\GitHub\\Wound-infection-detection-model\\data\\wound_focus_clean\\paper_split\\val_wound_marker_grouped.json",
+      "exists": true,
+      "sha256": "05c819c36a5c18e9e4cb77fe85f775aa057a62b2a2cd238f8572e4cccb6b3341",
+      "n_images": 59,
+      "n_annotations": 150,
+      "categories": [
+        "marker",
+        "wound"
+      ],
+      "image_membership_sha256": "4afb9403ddcf58fa6de800e9db7223194f9e3a2f2888e534ca55771bf2143cc1"
+    },
+    "test": {
+      "path": "E:\\GitHub\\Wound-infection-detection-model\\data\\wound_focus_clean\\paper_split\\test_wound_marker_grouped.json",
+      "exists": true,
+      "sha256": "a1ad05e520248fd5e8922d61be00dea02e687eb0eace8a4839b173ed3870dda2",
+      "n_images": 57,
+      "n_annotations": 126,
+      "categories": [
+        "marker",
+        "wound"
+      ],
+      "image_membership_sha256": "6d00a715e29b37cc32764c1aa479f7af7c2806eb3df3e793ed65cd22c977cc69"
+    }
+  },
+  "checkpoints": [
+    {
+      "path": "E:\\GitHub\\Wound-infection-detection-model\\experiments\\YOLO11m_UNetPP\\checkpoints\\yolo\\best.pt",
+      "exists": true,
+      "size_bytes": 45209903,
+      "sha256": "5e1d57cec22b0579b58b8eb61696b662a8a70eaca6fd495f30a716e2a05d0319"
+    },
+    {
+      "path": "E:\\GitHub\\Wound-infection-detection-model\\experiments\\YOLO11m_UNetPP\\checkpoints\\unet\\paper_grouped_phase7_locked\\best_model.pth",
+      "exists": true,
+      "size_bytes": 106409246,
+      "sha256": "9882275650888e16680e76d912ebafa506e96c5ff777c87328dc05b2aad7fbb2"
+    },
+    {
+      "path": "E:\\GitHub\\Wound-infection-detection-model\\experiments\\YOLO11m_UNetPP\\checkpoints\\infection\\infection_classifier.pth",
+      "exists": true,
+      "size_bytes": 16284,
+      "sha256": "23a2567f3025abb8645ba847c23ccee3075a8a110657bc8376b212f3fc697711"
+    }
+  ],
+  "git": {
+    "revision": "f08795f6e196d9a92f875b8bc6301cdca4f025f3",
+    "dirty": true
+  },
+  "archive_name": "paper_grouped_phase7_locked_20260716",
+  "frozen_at_utc": "2026-07-16T18:00:18.120262+00:00",
+  "immutable_intent": true
+}

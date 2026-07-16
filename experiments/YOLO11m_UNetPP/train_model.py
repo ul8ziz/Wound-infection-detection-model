@@ -72,10 +72,68 @@ from experiment_io import (
     get_unet_dirs,
     snapshot_config,
 )
+from experiment_provenance import (
+    build_experiment_manifest,
+    checkpoint_matches_config,
+    save_experiment_manifest,
+)
 
 from combined.inference import combined_inference
 from combined.marker import calculate_pixels_per_cm_from_marker
 from combined.coco_eval import evaluate_combined_coco
+
+
+VALID_RUN_MODES = {"train_from_scratch", "resume", "evaluate_only"}
+
+
+def normalize_run_mode(run_mode: str) -> str:
+    """Validate and normalize the explicit notebook/CLI execution mode."""
+    normalized = str(run_mode).strip().lower()
+    if normalized not in VALID_RUN_MODES:
+        choices = ", ".join(sorted(VALID_RUN_MODES))
+        raise ValueError(f"Invalid run_mode={run_mode!r}; choose one of: {choices}")
+    return normalized
+
+
+def should_train_component(
+    component: str,
+    checkpoint_path: Path,
+    manifest_path: Path,
+    config: dict,
+    run_mode: str,
+    *,
+    allow_legacy_checkpoint: bool = False,
+) -> bool:
+    """Return whether a component should train under an explicit run mode.
+
+    In ``evaluate_only`` mode, a checkpoint is mandatory. If a provenance
+    manifest exists, a configuration mismatch is rejected. Legacy checkpoints
+    without a manifest require an explicit opt-in during migration.
+    """
+    mode = normalize_run_mode(run_mode)
+    if mode == "train_from_scratch":
+        return True
+    if mode == "resume":
+        if not checkpoint_path.is_file():
+            raise FileNotFoundError(
+                f"Cannot resume {component}; checkpoint not found: {checkpoint_path}"
+            )
+        return True
+
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(
+            f"Cannot evaluate {component}; checkpoint not found: {checkpoint_path}"
+        )
+    compatible, reason = checkpoint_matches_config(manifest_path, config)
+    if not compatible:
+        if allow_legacy_checkpoint and "manifest missing" in reason:
+            print(
+                f"[MIGRATION WARNING] {component}: {reason}. "
+                "Legacy checkpoint explicitly allowed; freeze a manifest before paper use."
+            )
+        else:
+            raise RuntimeError(f"{component} checkpoint rejected: {reason}")
+    return False
 
 # Fix Windows console encoding
 if sys.platform == "win32":
@@ -130,7 +188,11 @@ def _resolve_yolo_run_name(yolo_project: Path, base_name: str = "train") -> str:
         return run_name
 
 
-def train_yolo(config: dict, script_dir: Path) -> dict:
+def train_yolo(
+    config: dict,
+    script_dir: Path,
+    run_mode: str = "train_from_scratch",
+) -> dict:
     """
     Train YOLO11m-seg using Ultralytics API.
     Returns dict with training results summary.
@@ -146,13 +208,26 @@ def train_yolo(config: dict, script_dir: Path) -> dict:
     print("Stage 1: Training YOLO11m-seg")
     print("=" * 60)
 
-    model = build_yolo_model(yolo_cfg.get("model", "yolo11m-seg.pt"))
+    mode = normalize_run_mode(run_mode)
+    if mode == "evaluate_only":
+        raise ValueError("train_yolo cannot run in evaluate_only mode")
+    resume_path = script_dir / "checkpoints" / "yolo" / "train" / "weights" / "last.pt"
+    if not resume_path.is_file():
+        resume_path = script_dir / "checkpoints" / "yolo" / "last.pt"
+    if mode == "resume" and not resume_path.is_file():
+        raise FileNotFoundError(f"YOLO resume checkpoint not found: {resume_path}")
+    model_weights = (
+        str(resume_path)
+        if mode == "resume"
+        else yolo_cfg.get("model", "yolo11m-seg.pt")
+    )
+    model = build_yolo_model(model_weights)
     yolo_project = script_dir / "checkpoints" / "yolo"
     yolo_project.mkdir(parents=True, exist_ok=True)
     run_name = _resolve_yolo_run_name(yolo_project, "train")
     train_dir = yolo_project / run_name
 
-    train_results = model.train(
+    train_kwargs = dict(
         data=str(dataset_yaml),
         imgsz=yolo_cfg.get("image_size", 640),
         epochs=yolo_cfg.get("epochs", 100),
@@ -184,6 +259,9 @@ def train_yolo(config: dict, script_dir: Path) -> dict:
         verbose=True,
         workers=config.get("num_workers", 0),
     )
+    if mode == "resume":
+        train_kwargs["resume"] = True
+    train_results = model.train(**train_kwargs)
 
     print("\nCopying YOLO results...")
     _copy_yolo_outputs(train_dir, script_dir)
@@ -191,6 +269,15 @@ def train_yolo(config: dict, script_dir: Path) -> dict:
     summary = _extract_yolo_metrics(train_dir)
     summary["training_completed"] = True
     summary["run_name"] = run_name
+    yolo_best = script_dir / "checkpoints" / "yolo" / "best.pt"
+    manifest = build_experiment_manifest(
+        config,
+        script_dir,
+        run_mode=mode,
+        checkpoint_paths=[yolo_best],
+    )
+    save_experiment_manifest(manifest, script_dir / "results" / "yolo")
+    save_experiment_manifest(manifest, train_dir)
     return summary
 
 
@@ -863,7 +950,11 @@ def build_unet_criterion(unet_cfg: dict) -> nn.Module:
     )
 
 
-def train_unet(config: dict, script_dir: Path) -> dict:
+def train_unet(
+    config: dict,
+    script_dir: Path,
+    run_mode: str = "train_from_scratch",
+) -> dict:
     """Full U-Net++ training loop with early stopping.
 
     **Best checkpoint:** ``best_model.pth`` is the weights from the validation epoch
@@ -876,6 +967,9 @@ def train_unet(config: dict, script_dir: Path) -> dict:
     print("Stage 2: Training U-Net++")
     print("=" * 60)
 
+    mode = normalize_run_mode(run_mode)
+    if mode == "evaluate_only":
+        raise ValueError("train_unet cannot run in evaluate_only mode")
     unet_cfg = config["unet"]
     device = get_device()
 
@@ -900,17 +994,22 @@ def train_unet(config: dict, script_dir: Path) -> dict:
     model.to(device)
     print(f"  U-Net++ on {device} ({sum(p.numel() for p in model.parameters()):,} params)")
 
-    resume_path = resolve_checkpoint_path(unet_cfg.get("resume_checkpoint"), script_dir)
+    resume_path = (
+        resolve_checkpoint_path(unet_cfg.get("resume_checkpoint"), script_dir)
+        if mode == "resume"
+        else None
+    )
     if resume_path is not None:
         ckpt_meta = load_unet_checkpoint(model, resume_path, device)
         print(f"  Resumed from checkpoint: {resume_path}")
         if isinstance(ckpt_meta, dict) and "epoch" in ckpt_meta:
             print(f"  Resume epoch: {ckpt_meta['epoch']}")
-    elif unet_cfg.get("resume_checkpoint"):
+    elif mode == "resume":
         print(
-            "  [WARNING] Resume checkpoint not found — training U-Net++ from scratch: "
+            "  [ERROR] Resume checkpoint not found: "
             f"{unet_cfg.get('resume_checkpoint')}"
         )
+        raise FileNotFoundError(str(unet_cfg.get("resume_checkpoint")))
 
     if bool(unet_cfg.get("freeze_encoder", False)) and hasattr(model, "encoder"):
         for param in model.encoder.parameters():
@@ -1044,6 +1143,14 @@ def train_unet(config: dict, script_dir: Path) -> dict:
     with open(results_dir / "metrics_summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, default=str)
 
+    manifest = build_experiment_manifest(
+        config,
+        script_dir,
+        run_mode=mode,
+        checkpoint_paths=[best_path],
+    )
+    save_experiment_manifest(manifest, results_dir)
+
     # Save curves
     save_unet_training_curves(history, results_dir)
 
@@ -1120,6 +1227,81 @@ def _parse_infection_from_filename(filename: str) -> str:
     return "unknown"
 
 
+def _is_infected_binary(label: Optional[str]) -> Optional[bool]:
+    """Map infection label to binary positive/negative, or None if unknown."""
+    if not label:
+        return None
+    name = str(label).lower()
+    if "not" in name or name in {"non_infected", "negative", "0"}:
+        return False
+    if "infected" in name or name in {"positive", "1"}:
+        return True
+    return None
+
+
+def _prediction_outcome(
+    metadata_label: Optional[str],
+    predicted_label: Optional[str],
+) -> Optional[str]:
+    """Return TP/TN/FP/FN from metadata-based and predicted infection labels."""
+    meta_pos = _is_infected_binary(metadata_label)
+    pred_pos = _is_infected_binary(predicted_label)
+    if meta_pos is None or pred_pos is None:
+        return None
+    if meta_pos and pred_pos:
+        return "TP"
+    if not meta_pos and not pred_pos:
+        return "TN"
+    if not meta_pos and pred_pos:
+        return "FP"
+    return "FN"
+
+
+def _compute_mask_metrics(
+    pred_mask: np.ndarray,
+    gt_mask: np.ndarray,
+) -> Tuple[float, float]:
+    """Return Dice and IoU between binary prediction and reference masks."""
+    smooth = 1e-6
+    p_flat = pred_mask.flatten().astype(float)
+    t_flat = gt_mask.flatten().astype(float)
+    inter = (p_flat * t_flat).sum()
+    union = p_flat.sum() + t_flat.sum()
+    dice = float((2 * inter + smooth) / (union + smooth))
+    iou = float((inter + smooth) / (union - inter + smooth))
+    return dice, iou
+
+
+def _bootstrap_mean_ci(
+    values: List[float],
+    *,
+    seed: int = 42,
+    n_bootstrap: int = 2000,
+) -> dict:
+    """Return a percentile 95% confidence interval for a sample mean."""
+    if not values:
+        return {}
+    array = np.asarray(values, dtype=float)
+    rng = np.random.default_rng(seed)
+    indices = rng.integers(0, len(array), size=(n_bootstrap, len(array)))
+    means = array[indices].mean(axis=1)
+    return {
+        "lower": round(float(np.percentile(means, 2.5)), 6),
+        "upper": round(float(np.percentile(means, 97.5)), 6),
+        "n_bootstrap": n_bootstrap,
+    }
+
+
+def _format_infection_display(label: Optional[str]) -> str:
+    if not label or label == "unknown":
+        return "UNKNOWN"
+    if _is_infected_binary(label) is False:
+        return "NOT INFECTED"
+    if _is_infected_binary(label) is True:
+        return "INFECTED"
+    return str(label).upper()
+
+
 def draw_info_panel(
     image: np.ndarray,
     area_cm2: Optional[float],
@@ -1127,6 +1309,11 @@ def draw_info_panel(
     pixels_per_cm: Optional[float],
     infection_label: Optional[str] = None,
     infection_prob: Optional[float] = None,
+    *,
+    dice: Optional[float] = None,
+    iou: Optional[float] = None,
+    metadata_infection: Optional[str] = None,
+    prediction_outcome: Optional[str] = None,
 ) -> np.ndarray:
     """Draw a unified info panel on the top-left corner of the image.
 
@@ -1178,6 +1365,17 @@ def draw_info_panel(
     elif infection_label == "unknown":
         lines.append("Status: UNKNOWN")
         colors.append((180, 180, 180))
+
+    if dice is not None and iou is not None:
+        lines.append(f"Segm: Dice={dice:.3f} | IoU={iou:.3f}")
+        colors.append((200, 200, 255))
+
+    if metadata_infection is not None:
+        meta_text = _format_infection_display(metadata_infection)
+        pred_text = _format_infection_display(infection_label)
+        outcome_text = f" ({prediction_outcome})" if prediction_outcome else ""
+        lines.append(f"Meta: {meta_text} | Pred: {pred_text}{outcome_text}")
+        colors.append((220, 220, 220))
 
     # Compute panel size
     max_tw = 0
@@ -1259,8 +1457,16 @@ def evaluate_combined(config: dict, script_dir: Path) -> dict:
         results_combined,
         Path(config["_config_path"]) if config.get("_config_path") else None,
     )
+    manifest = build_experiment_manifest(
+        config,
+        script_dir,
+        run_mode="evaluate_only",
+        checkpoint_paths=[yolo_best, unet_best],
+    )
+    manifest_path = save_experiment_manifest(manifest, results_combined)
     print(f"  Results dir: {results_combined}")
     print(f"  Config:      {config_snapshot}")
+    print(f"  Manifest:    {manifest_path}")
 
     classifier_path = script_dir / "checkpoints" / "infection" / "infection_classifier.pth"
     num_qual = combined_cfg.get("num_qualitative_samples", 8)
@@ -1268,6 +1474,7 @@ def evaluate_combined(config: dict, script_dir: Path) -> dict:
 
     n_total = 0
     n_missed = 0
+    n_marker_detected = 0
     for img_id, img_info in img_lookup.items():
         img_path = str(data_root / img_info["file_name"])
         if not Path(img_path).exists():
@@ -1288,48 +1495,51 @@ def evaluate_combined(config: dict, script_dir: Path) -> dict:
 
         if not has_pred:
             n_missed += 1
-            dice_scores.append(0.0)
-            iou_scores.append(0.0)
-            continue
+            dice, iou = 0.0, 0.0
+            dice_scores.append(dice)
+            iou_scores.append(iou)
+            combined_mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
+            area_px = 0
+            area_cm2 = None
+            ppcm = None
+            marker_detected = False
+            predicted_infection = _parse_infection_from_filename(img_info["file_name"])
+            infection_prob = None
+        else:
+            combined_mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
+            for m in pred["masks"]:
+                if m.shape == (orig_h, orig_w):
+                    combined_mask = np.maximum(combined_mask, m)
 
-        combined_mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
-        for m in pred["masks"]:
-            if m.shape == (orig_h, orig_w):
-                combined_mask = np.maximum(combined_mask, m)
+            dice, iou = _compute_mask_metrics(combined_mask, gt_mask)
+            dice_scores.append(dice)
+            iou_scores.append(iou)
 
-        smooth = 1e-6
-        p_flat = combined_mask.flatten().astype(float)
-        t_flat = gt_mask.flatten().astype(float)
-        inter = (p_flat * t_flat).sum()
-        union = p_flat.sum() + t_flat.sum()
-        dice = (2 * inter + smooth) / (union + smooth)
-        iou = (inter + smooth) / (union - inter + smooth)
-        dice_scores.append(dice)
-        iou_scores.append(iou)
+            ppcm = pred.get("pixels_per_cm")
+            area_px = int(combined_mask.sum())
+            area_cm2 = calculate_wound_area(combined_mask, ppcm) if ppcm else None
+            marker_detected = ppcm is not None
 
-        # Area measurement: only when marker is detected
-        ppcm = pred.get("pixels_per_cm")
-        area_px = int(combined_mask.sum())
-        area_cm2 = calculate_wound_area(combined_mask, ppcm) if ppcm else None
-        marker_detected = ppcm is not None
+            predicted_infection = _parse_infection_from_filename(img_info["file_name"])
+            infection_prob = None
+            if classifier_path.exists() and area_px > 0:
+                try:
+                    image_rgb = cv2.cvtColor(
+                        cv2.imread(img_path), cv2.COLOR_BGR2RGB,
+                    )
+                    inf_result = predict_infection(
+                        image_rgb, combined_mask, classifier_path, device,
+                    )
+                    predicted_infection = inf_result["predicted"]
+                    infection_prob = inf_result["infected_prob"]
+                except Exception:
+                    pass
 
-        # Infection classification
-        infection_label = _parse_infection_from_filename(img_info["file_name"])
-        infection_prob: Optional[float] = None
-        if classifier_path.exists() and area_px > 0:
-            try:
-                image_rgb = cv2.cvtColor(
-                    cv2.imread(img_path), cv2.COLOR_BGR2RGB,
-                )
-                inf_result = predict_infection(
-                    image_rgb, combined_mask, classifier_path, device,
-                )
-                infection_label = inf_result["predicted"]
-                infection_prob = inf_result["infected_prob"]
-            except Exception:
-                pass
-
+        metadata_infection = _parse_infection_from_filename(img_info["file_name"])
+        outcome = _prediction_outcome(metadata_infection, predicted_infection)
         quality = "measured" if marker_detected else "unavailable"
+        if marker_detected:
+            n_marker_detected += 1
         wound_areas.append({
             "image": img_info["file_name"],
             "area_px": area_px,
@@ -1337,11 +1547,15 @@ def evaluate_combined(config: dict, script_dir: Path) -> dict:
             "pixels_per_cm": ppcm,
             "marker_detected": marker_detected,
             "measurement_quality": quality,
-            "infection": infection_label,
+            "dice": round(dice, 6),
+            "iou": round(iou, 6),
+            "metadata_infection": metadata_infection,
+            "infection": predicted_infection,
             "infection_prob": infection_prob,
+            "prediction_outcome": outcome,
         })
 
-        if saved_count < num_qual:
+        if has_pred and saved_count < num_qual:
             img_bgr = cv2.imread(img_path)
             if img_bgr is not None:
                 overlay = img_bgr.copy()
@@ -1361,7 +1575,11 @@ def evaluate_combined(config: dict, script_dir: Path) -> dict:
 
                 overlay = draw_info_panel(
                     overlay, area_cm2, area_px, ppcm,
-                    infection_label, infection_prob,
+                    predicted_infection, infection_prob,
+                    dice=dice,
+                    iou=iou,
+                    metadata_infection=metadata_infection,
+                    prediction_outcome=outcome,
                 )
 
                 fname = Path(img_info["file_name"]).stem
@@ -1377,8 +1595,12 @@ def evaluate_combined(config: dict, script_dir: Path) -> dict:
                             ),
                             "wound_area_cm2": area_cm2,
                             "wound_area_px": area_px,
-                            "infection": infection_label,
+                            "dice": round(dice, 6),
+                            "iou": round(iou, 6),
+                            "metadata_infection": metadata_infection,
+                            "infection": predicted_infection,
                             "infection_prob": infection_prob,
+                            "prediction_outcome": outcome,
                             "marker_detected": marker_detected,
                         },
                         f,
@@ -1392,11 +1614,22 @@ def evaluate_combined(config: dict, script_dir: Path) -> dict:
     metrics = {
         "mean_dice": sum(dice_scores) / n_full,
         "mean_iou": sum(iou_scores) / n_full,
+        "median_dice": float(np.median(dice_scores)) if dice_scores else 0.0,
+        "median_iou": float(np.median(iou_scores)) if iou_scores else 0.0,
+        "mean_dice_ci95": _bootstrap_mean_ci(
+            dice_scores, seed=int(config.get("seed", 42))
+        ),
+        "mean_iou_ci95": _bootstrap_mean_ci(
+            iou_scores, seed=int(config.get("seed", 42)) + 1
+        ),
         "mean_dice_conditional": sum(dice_scores) / cond_n,
         "mean_iou_conditional": sum(iou_scores) / cond_n,
         "n_images_total": n_total,
         "n_images_evaluated": n_detected,
         "n_images_missed": n_missed,
+        "n_marker_detected": n_marker_detected,
+        "marker_detection_rate": n_marker_detected / max(n_total, 1),
+        "n_dice_below_0_5": sum(score < 0.5 for score in dice_scores),
         "n_predictions_saved": saved_count,
     }
 
@@ -1556,14 +1789,14 @@ def _collect_infection_features(
     return features_list, labels_list, skipped_no_mask, skipped_no_label
 
 
-def _compute_binary_metrics(
-    model: "nn.Module",
-    X_norm: "torch.Tensor",
+def _binary_metrics_from_probabilities(
+    probabilities: "torch.Tensor",
     y: "torch.Tensor",
+    threshold: float = 0.5,
 ) -> dict:
-    """Return accuracy, precision, recall, F1 for a binary classifier."""
+    """Return binary metrics from probabilities at a locked threshold."""
     with torch.no_grad():
-        preds = (torch.sigmoid(model(X_norm)) > 0.5).float()
+        preds = (probabilities >= threshold).float()
     tp = float(((preds == 1) & (y == 1)).sum())
     fp = float(((preds == 1) & (y == 0)).sum())
     fn = float(((preds == 0) & (y == 1)).sum())
@@ -1576,8 +1809,77 @@ def _compute_binary_metrics(
         "accuracy": round(accuracy, 6),
         "precision": round(precision, 6),
         "recall": round(recall, 6),
+        "specificity": round(tn / max(tn + fp, 1), 6),
         "f1_score": round(f1, 6),
+        "threshold": round(float(threshold), 6),
         "tp": int(tp), "fp": int(fp), "fn": int(fn), "tn": int(tn),
+    }
+
+
+def _compute_binary_metrics(
+    model: "nn.Module",
+    X_norm: "torch.Tensor",
+    y: "torch.Tensor",
+    threshold: float = 0.5,
+) -> dict:
+    """Return binary metrics for a classifier at a locked threshold."""
+    with torch.no_grad():
+        probabilities = torch.sigmoid(model(X_norm))
+    return _binary_metrics_from_probabilities(probabilities, y, threshold)
+
+
+def _select_binary_threshold(
+    probabilities: "torch.Tensor",
+    y: "torch.Tensor",
+) -> tuple[float, dict]:
+    """Select threshold on validation F1 only; never inspect test labels."""
+    candidates = np.linspace(0.10, 0.90, 81)
+    scored = []
+    for threshold in candidates:
+        metrics = _binary_metrics_from_probabilities(
+            probabilities, y, float(threshold)
+        )
+        balanced_accuracy = 0.5 * (
+            metrics["recall"] + metrics["specificity"]
+        )
+        scored.append((metrics["f1_score"], balanced_accuracy, threshold, metrics))
+    _, _, threshold, metrics = max(
+        scored,
+        key=lambda item: (item[0], item[1], -abs(float(item[2]) - 0.5)),
+    )
+    return float(threshold), metrics
+
+
+def _bootstrap_binary_confidence_intervals(
+    probabilities: "torch.Tensor",
+    y: "torch.Tensor",
+    threshold: float,
+    *,
+    n_bootstrap: int = 2000,
+    seed: int = 42,
+) -> dict:
+    """Compute percentile 95% CIs on the held-out test samples."""
+    probs_np = probabilities.detach().cpu().numpy().reshape(-1)
+    labels_np = y.detach().cpu().numpy().reshape(-1)
+    if len(labels_np) < 2:
+        return {}
+    rng = np.random.default_rng(seed)
+    samples = {key: [] for key in ("accuracy", "precision", "recall", "specificity", "f1_score")}
+    for _ in range(n_bootstrap):
+        indices = rng.integers(0, len(labels_np), size=len(labels_np))
+        sampled_probs = torch.tensor(probs_np[indices], dtype=torch.float32).reshape(-1, 1)
+        sampled_labels = torch.tensor(labels_np[indices], dtype=torch.float32).reshape(-1, 1)
+        metrics = _binary_metrics_from_probabilities(
+            sampled_probs, sampled_labels, threshold
+        )
+        for key in samples:
+            samples[key].append(metrics[key])
+    return {
+        key: {
+            "lower": round(float(np.percentile(values, 2.5)), 6),
+            "upper": round(float(np.percentile(values, 97.5)), 6),
+        }
+        for key, values in samples.items()
     }
 
 
@@ -1585,26 +1887,31 @@ def train_infection_classifier(
     config: dict,
     script_dir: Path,
 ) -> dict:
-    """Train the infection classifier on train split only, then evaluate on
-    the held-out test split for independent generalization assessment.
+    """Train on train, select epoch/threshold on val, evaluate test once.
 
-    Training data: ann_train  (wound-annotated training images)
-    Evaluation:    ann_test   (55-image wound-only test subset, never seen during training)
-
-    The val split is intentionally excluded from training to preserve its role
-    in model selection for YOLO/U-Net++. Including it here would contaminate
-    the development pipeline with test-set information.
+    Infection labels remain filename-derived metadata proxies and must not be
+    interpreted as clinical diagnoses.
     """
     print("\n" + "=" * 60)
     print("Stage 4: Training Infection Classifier")
     print("  Train split: ann_train only")
-    print("  Test  split: ann_test  (independent, not seen during training)")
+    print("  Val split:   ann_val (epoch + threshold selection)")
+    print("  Test split:  ann_test (final held-out evaluation)")
     print("=" * 60)
 
     device = get_device()
     project_root = script_dir.parent.parent
     data_root = (project_root / config["data_root"]).resolve()
-    data_root_train = (project_root / config.get("data_root_train", config["data_root"])).resolve()
+    data_root_train = (
+        project_root / config.get("data_root_train", config["data_root"])
+    ).resolve()
+    infection_cfg = config.get("infection", {})
+    seeds = [int(seed) for seed in infection_cfg.get("seeds", [42, 43, 44])]
+    max_epochs = int(infection_cfg.get("epochs", 200))
+    patience = int(infection_cfg.get("early_stop_patience", 25))
+    learning_rate = float(infection_cfg.get("lr", 0.001))
+    weight_decay = float(infection_cfg.get("weight_decay", 1e-4))
+    n_bootstrap = int(infection_cfg.get("bootstrap_samples", 2000))
 
     yolo_best = script_dir / "checkpoints" / "yolo" / "best.pt"
     unet_best = get_unet_best_checkpoint_path(script_dir, config)
@@ -1617,8 +1924,8 @@ def train_infection_classifier(
         print("        Run: python train_model.py --stage unet")
         return {}
 
-    if "ann_test" not in config:
-        print("[ERROR] ann_test not found in config — cannot run independent evaluation.")
+    if "ann_val" not in config or "ann_test" not in config:
+        print("[ERROR] ann_val and ann_test are required for independent evaluation.")
         return {}
 
     yolo_model = build_yolo_model(str(yolo_best))
@@ -1627,74 +1934,202 @@ def train_infection_classifier(
     unet_model.to(device)
     unet_model.eval()
 
-    # ── collect train features (training data only) ──────────────────────────
-    print("\n[1/2] Extracting features from TRAIN split ...")
-    train_ann = (project_root / config["ann_train"]).resolve()
-    train_feats, train_labels, skip_mask_tr, skip_lbl_tr = _collect_infection_features(
-        yolo_model, unet_model, device, config,
-        ann_path=train_ann, img_root=data_root_train, split_name="train",
-    )
-    print(
-        f"  Train: {len(train_feats)} usable  "
-        f"(skipped no-mask={skip_mask_tr}, no-label={skip_lbl_tr})"
-    )
+    split_specs = {
+        "train": (
+            (project_root / config["ann_train"]).resolve(),
+            data_root_train,
+        ),
+        "val": (
+            (project_root / config["ann_val"]).resolve(),
+            data_root,
+        ),
+        "test": (
+            (project_root / config["ann_test"]).resolve(),
+            data_root,
+        ),
+    }
+    collected = {}
+    for index, (split, (ann_path, root)) in enumerate(split_specs.items(), start=1):
+        print(f"\n[{index}/3] Extracting features from {split.upper()} split ...")
+        features, labels, skipped_mask, skipped_label = _collect_infection_features(
+            yolo_model,
+            unet_model,
+            device,
+            config,
+            ann_path=ann_path,
+            img_root=root,
+            split_name=split,
+        )
+        collected[split] = {
+            "features": features,
+            "labels": labels,
+            "skipped_no_mask": skipped_mask,
+            "skipped_no_label": skipped_label,
+        }
+        print(
+            f"  {split.title()}: {len(features)} usable "
+            f"(skipped no-mask={skipped_mask}, no-label={skipped_label})"
+        )
 
-    if len(train_feats) < 10:
-        print(f"[ERROR] Only {len(train_feats)} training samples — too few.")
+    if len(collected["train"]["features"]) < 10:
+        print("[ERROR] Too few training samples.")
+        return {}
+    if len(collected["val"]["features"]) < 5:
+        print("[ERROR] Too few validation samples for threshold selection.")
         return {}
 
-    X_train = torch.tensor(np.array(train_feats), dtype=torch.float32)
-    y_train = torch.tensor(train_labels, dtype=torch.float32).unsqueeze(1)
+    tensors = {}
+    for split in ("train", "val", "test"):
+        tensors[split] = {
+            "X": torch.tensor(
+                np.array(collected[split]["features"]), dtype=torch.float32
+            ),
+            "y": torch.tensor(
+                collected[split]["labels"], dtype=torch.float32
+            ).unsqueeze(1),
+        }
+    X_train = tensors["train"]["X"]
+    y_train = tensors["train"]["y"]
     n_infected_train = int(y_train.sum())
     n_not_train = len(y_train) - n_infected_train
-    print(
-        f"  infected={n_infected_train}, non-infected={n_not_train}"
-    )
+    print(f"  Train labels: infected={n_infected_train}, non-infected={n_not_train}")
 
-    # ── collect test features (held out, never used during training) ─────────
-    print("\n[2/2] Extracting features from TEST split (held out) ...")
-    test_ann = (project_root / config["ann_test"]).resolve()
-    test_feats, test_labels, skip_mask_te, skip_lbl_te = _collect_infection_features(
-        yolo_model, unet_model, device, config,
-        ann_path=test_ann, img_root=data_root, split_name="test",
-    )
-    print(
-        f"  Test:  {len(test_feats)} usable  "
-        f"(skipped no-mask={skip_mask_te}, no-label={skip_lbl_te})"
-    )
-
-    # ── normalise using TRAIN statistics only ────────────────────────────────
     feat_mean = X_train.mean(dim=0)
     feat_std = X_train.std(dim=0).clamp(min=1e-6)
-    X_train_norm = ((X_train - feat_mean) / feat_std).to(device)
-    y_train_dev = y_train.to(device)
-
-    # ── build and train model ─────────────────────────────────────────────────
-    model = WoundInfectionClassifier(in_features=X_train.shape[1])
-    model.to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
+    for split in ("train", "val", "test"):
+        tensors[split]["X_norm"] = (
+            (tensors[split]["X"] - feat_mean) / feat_std
+        ).to(device)
+        tensors[split]["y_dev"] = tensors[split]["y"].to(device)
 
     pos_count = float(y_train.sum())
     neg_count = len(y_train) - pos_count
     pos_weight = torch.tensor([neg_count / max(pos_count, 1)]).to(device)
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
-    print("\nTraining infection classifier (train split only) ...")
-    model.train()
-    for epoch in range(1, 201):
-        optimizer.zero_grad()
-        logits = model(X_train_norm)
-        loss = criterion(logits, y_train_dev)
-        loss.backward()
-        optimizer.step()
+    seed_runs = []
+    best_run = None
+    print(f"\nTraining infection classifier with seeds={seeds} ...")
+    for seed in seeds:
+        set_seed(seed)
+        model = WoundInfectionClassifier(in_features=X_train.shape[1]).to(device)
+        optimizer = torch.optim.Adam(
+            model.parameters(),
+            lr=learning_rate,
+            weight_decay=weight_decay,
+        )
+        history = {
+            "epochs": [],
+            "loss": [],
+            "val_loss": [],
+            "train_accuracy": [],
+            "val_f1_at_0_5": [],
+        }
+        best_state = None
+        best_val_loss = float("inf")
+        epochs_without_improvement = 0
+        best_epoch = 0
 
-        if epoch % 50 == 0:
+        for epoch in range(1, max_epochs + 1):
+            model.train()
+            optimizer.zero_grad()
+            logits = model(tensors["train"]["X_norm"])
+            loss = criterion(logits, tensors["train"]["y_dev"])
+            loss.backward()
+            optimizer.step()
+
+            model.eval()
             with torch.no_grad():
-                preds = (torch.sigmoid(logits) > 0.5).float()
-                acc = (preds == y_train_dev).float().mean().item()
-            print(f"  Epoch {epoch}: loss={loss.item():.4f}, train_acc={acc:.4f}")
+                train_probs = torch.sigmoid(
+                    model(tensors["train"]["X_norm"])
+                )
+                val_logits = model(tensors["val"]["X_norm"])
+                val_loss = criterion(val_logits, tensors["val"]["y_dev"]).item()
+                val_probs = torch.sigmoid(val_logits)
+            train_metrics_epoch = _binary_metrics_from_probabilities(
+                train_probs, tensors["train"]["y_dev"], 0.5
+            )
+            val_metrics_epoch = _binary_metrics_from_probabilities(
+                val_probs, tensors["val"]["y_dev"], 0.5
+            )
+            history["epochs"].append(epoch)
+            history["loss"].append(round(loss.item(), 6))
+            history["val_loss"].append(round(val_loss, 6))
+            history["train_accuracy"].append(train_metrics_epoch["accuracy"])
+            history["val_f1_at_0_5"].append(val_metrics_epoch["f1_score"])
 
-    # ── save checkpoint ───────────────────────────────────────────────────────
+            if val_loss < best_val_loss - 1e-5:
+                best_val_loss = val_loss
+                best_epoch = epoch
+                best_state = {
+                    key: value.detach().cpu().clone()
+                    for key, value in model.state_dict().items()
+                }
+                epochs_without_improvement = 0
+            else:
+                epochs_without_improvement += 1
+            if epochs_without_improvement >= patience:
+                break
+
+        if best_state is None:
+            raise RuntimeError(f"No validation checkpoint selected for seed {seed}")
+        model.load_state_dict(best_state)
+        model.eval()
+        with torch.no_grad():
+            train_probs = torch.sigmoid(model(tensors["train"]["X_norm"]))
+            val_probs = torch.sigmoid(model(tensors["val"]["X_norm"]))
+        threshold, val_metrics = _select_binary_threshold(
+            val_probs, tensors["val"]["y_dev"]
+        )
+        train_metrics = _binary_metrics_from_probabilities(
+            train_probs, tensors["train"]["y_dev"], threshold
+        )
+        run = {
+            "seed": seed,
+            "best_epoch": best_epoch,
+            "best_val_loss": round(best_val_loss, 6),
+            "threshold": round(threshold, 6),
+            "train_metrics": train_metrics,
+            "val_metrics": val_metrics,
+            "history": history,
+            "model_state_dict": best_state,
+        }
+        seed_runs.append(run)
+        print(
+            f"  seed={seed}: epoch={best_epoch}, threshold={threshold:.2f}, "
+            f"val_F1={val_metrics['f1_score']:.4f}"
+        )
+        if best_run is None or (
+            val_metrics["f1_score"],
+            -best_val_loss,
+            -seed,
+        ) > (
+            best_run["val_metrics"]["f1_score"],
+            -best_run["best_val_loss"],
+            -best_run["seed"],
+        ):
+            best_run = run
+
+    if best_run is None:
+        raise RuntimeError("No infection classifier run completed")
+
+    model = WoundInfectionClassifier(in_features=X_train.shape[1]).to(device)
+    model.load_state_dict(best_run["model_state_dict"])
+    model.eval()
+    threshold = float(best_run["threshold"])
+    with torch.no_grad():
+        test_probs = torch.sigmoid(model(tensors["test"]["X_norm"]))
+    test_metrics = _binary_metrics_from_probabilities(
+        test_probs, tensors["test"]["y_dev"], threshold
+    )
+    test_ci = _bootstrap_binary_confidence_intervals(
+        test_probs,
+        tensors["test"]["y_dev"],
+        threshold,
+        n_bootstrap=n_bootstrap,
+        seed=int(config.get("seed", 42)),
+    )
+
     ckpt_dir = script_dir / "checkpoints" / "infection"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     torch.save({
@@ -1702,75 +2137,63 @@ def train_infection_classifier(
         "feat_mean": feat_mean.cpu(),
         "feat_std": feat_std.cpu(),
         "in_features": X_train.shape[1],
+        "threshold": threshold,
+        "seed": best_run["seed"],
+        "best_epoch": best_run["best_epoch"],
+        "label_note": "Filename metadata proxy; not a clinical diagnosis.",
     }, ckpt_dir / "infection_classifier.pth")
 
-    # ── train metrics (in-sample, for reference only) ─────────────────────────
-    model.eval()
-    train_metrics = _compute_binary_metrics(model, X_train_norm, y_train_dev)
-
-    # ── test metrics (independent, generalization estimate) ───────────────────
-    test_has_results = len(test_feats) >= 5
-    if test_has_results:
-        X_test = torch.tensor(np.array(test_feats), dtype=torch.float32)
-        y_test = torch.tensor(test_labels, dtype=torch.float32).unsqueeze(1)
-        X_test_norm = ((X_test - feat_mean.cpu()) / feat_std.cpu()).to(device)
-        y_test_dev = y_test.to(device)
-        test_metrics = _compute_binary_metrics(model, X_test_norm, y_test_dev)
-        n_infected_test = int(y_test.sum())
-        n_not_test = len(y_test) - n_infected_test
-    else:
-        print("[WARNING] Too few test samples for evaluation — skipping test metrics.")
-        test_metrics = {}
-        n_infected_test = 0
-        n_not_test = 0
-
-    # ── print results ─────────────────────────────────────────────────────────
-    print("\n── Train metrics (in-sample, NOT generalization) ──")
-    for k, v in train_metrics.items():
-        print(f"  train_{k}: {v:.4f}" if isinstance(v, float) else f"  train_{k}: {v}")
-
-    if test_has_results:
-        print("\n── Test metrics (independent, held-out — generalization estimate) ──")
-        for k, v in test_metrics.items():
-            print(f"  test_{k}: {v:.4f}" if isinstance(v, float) else f"  test_{k}: {v}")
-    print()
-
-    # ── build summary ─────────────────────────────────────────────────────────
+    train_metrics = best_run["train_metrics"]
+    val_metrics = best_run["val_metrics"]
+    n_infected_val = int(tensors["val"]["y"].sum())
+    n_infected_test = int(tensors["test"]["y"].sum())
     summary = {
         "evaluation_note": (
-            "train_* metrics are in-sample (train split only). "
-            "test_* metrics are independent (held-out test split, never seen during training). "
+            "train_* metrics are in-sample. val_* selected epoch and threshold. "
+            "test_* metrics are held out and evaluated after locking the model. "
             "Labels are derived from filename metadata (-not-), not confirmed clinical diagnosis."
         ),
+        "selection_protocol": (
+            "Epoch selected by validation BCE loss; decision threshold selected by "
+            "validation F1; canonical seed selected by validation F1 only."
+        ),
+        "canonical_seed": best_run["seed"],
+        "best_epoch": best_run["best_epoch"],
+        "decision_threshold": threshold,
         "train_n_samples": len(X_train),
         "train_n_infected": n_infected_train,
         "train_n_non_infected": n_not_train,
-        "train_accuracy": train_metrics["accuracy"],
-        "train_precision": train_metrics["precision"],
-        "train_recall": train_metrics["recall"],
-        "train_f1_score": train_metrics["f1_score"],
+        **{f"train_{key}": value for key, value in train_metrics.items()},
+        "val_n_samples": len(tensors["val"]["y"]),
+        "val_n_infected": n_infected_val,
+        "val_n_non_infected": len(tensors["val"]["y"]) - n_infected_val,
+        **{f"val_{key}": value for key, value in val_metrics.items()},
+        "test_n_samples": len(tensors["test"]["y"]),
+        "test_n_infected": n_infected_test,
+        "test_n_non_infected": len(tensors["test"]["y"]) - n_infected_test,
+        **{f"test_{key}": value for key, value in test_metrics.items()},
+        "test_confidence_intervals_95": test_ci,
+        "seed_runs": [
+            {
+                key: value
+                for key, value in run.items()
+                if key not in {"history", "model_state_dict"}
+            }
+            for run in seed_runs
+        ],
     }
-
-    if test_has_results:
-        summary.update({
-            "test_n_samples": len(X_test),
-            "test_n_infected": n_infected_test,
-            "test_n_non_infected": n_not_test,
-            "test_accuracy": test_metrics["accuracy"],
-            "test_precision": test_metrics["precision"],
-            "test_recall": test_metrics["recall"],
-            "test_f1_score": test_metrics["f1_score"],
-            "test_tp": test_metrics["tp"],
-            "test_fp": test_metrics["fp"],
-            "test_fn": test_metrics["fn"],
-            "test_tn": test_metrics["tn"],
-        })
 
     results_dir = script_dir / "results" / "infection"
     results_dir.mkdir(parents=True, exist_ok=True)
+    with open(results_dir / "training_history.json", "w", encoding="utf-8") as f:
+        json.dump(best_run["history"], f, indent=2)
     with open(results_dir / "metrics_summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, ensure_ascii=False)
 
+    print("\n── Final held-out test metrics ──")
+    for key in ("accuracy", "precision", "recall", "specificity", "f1_score"):
+        print(f"  test_{key}: {test_metrics[key]:.4f}")
+    print(f"  Saved: {results_dir / 'training_history.json'}")
     print(f"  Saved: {results_dir / 'metrics_summary.json'}")
     return summary
 
@@ -1805,10 +2228,12 @@ def predict_infection(
     with torch.no_grad():
         logit = model(feats_norm)
         prob = torch.sigmoid(logit).item()
+    threshold = float(ckpt.get("threshold", 0.5))
 
     return {
         "infected_prob": prob,
-        "predicted": "infected" if prob > 0.5 else "non_infected",
+        "threshold": threshold,
+        "predicted": "infected" if prob >= threshold else "non_infected",
     }
 
 
@@ -1922,6 +2347,412 @@ def generate_report(
 
     print(f"  -> Report saved to {report_path}")
     return report_path
+
+
+def _find_yolo_results_csv(script_dir: Path) -> Optional[Path]:
+    """Return the first existing YOLO training results.csv path."""
+    candidates = [
+        script_dir / "checkpoints" / "yolo" / "train" / "results.csv",
+        script_dir / "results" / "yolo" / "results.csv",
+        script_dir / "checkpoints" / "yolo" / "results.csv",
+    ]
+    for path in candidates:
+        if path.is_file():
+            return path
+    return None
+
+
+def _load_json_if_exists(path: Path) -> dict:
+    if not path.is_file():
+        return {}
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _display_figure_inline(path: Path, fig=None) -> None:
+    """Show a saved figure inline in Jupyter; fall back to ``plt.show()``."""
+    try:
+        from IPython.display import Image, display
+        from IPython import get_ipython
+        if get_ipython() is not None:
+            display(Image(filename=str(path)))
+            if fig is not None:
+                plt.close(fig)
+            return
+    except Exception:
+        pass
+    if fig is not None:
+        plt.show()
+        plt.close(fig)
+    else:
+        try:
+            plt.imshow(plt.imread(str(path)))
+            plt.axis("off")
+            plt.show()
+        except Exception:
+            print(f"  (figure saved to {path} — open file to view)")
+
+
+def display_training_curves(script_dir: Path, config: dict) -> Path:
+    """Render a 2×3 dashboard of YOLO, U-Net++, and infection training curves.
+
+    Saves ``results/figures/training_curves_dashboard.png`` and calls ``plt.show()``
+    for inline notebook display.
+    """
+    import pandas as pd
+
+    figures_dir = script_dir / "results" / "figures"
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    out_path = figures_dir / "training_curves_dashboard.png"
+
+    unet_dirs = get_unet_dirs(script_dir, config)
+    unet_history = _load_json_if_exists(unet_dirs["results"] / "training_history.json")
+    unet_metrics = _load_json_if_exists(unet_dirs["results"] / "metrics_summary.json")
+    inf_history = _load_json_if_exists(script_dir / "results" / "infection" / "training_history.json")
+    inf_metrics = _load_json_if_exists(script_dir / "results" / "infection" / "metrics_summary.json")
+
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    axes = axes.flatten()
+
+    # ── YOLO mAP curves ───────────────────────────────────────────────────────
+    yolo_csv = _find_yolo_results_csv(script_dir)
+    if yolo_csv is not None:
+        df = pd.read_csv(yolo_csv)
+        df.columns = [c.strip() for c in df.columns]
+        epochs = df["epoch"] if "epoch" in df.columns else range(1, len(df) + 1)
+        map_cols = {
+            "bbox mAP50": "metrics/mAP50(B)",
+            "bbox mAP50-95": "metrics/mAP50-95(B)",
+            "segm mAP50": "metrics/mAP50(M)",
+            "segm mAP50-95": "metrics/mAP50-95(M)",
+        }
+        for label, col in map_cols.items():
+            if col in df.columns:
+                axes[0].plot(epochs, df[col], label=label)
+        axes[0].set_title("YOLO Metrics")
+        axes[0].set_xlabel("Epoch")
+        axes[0].set_ylabel("mAP")
+        axes[0].legend(fontsize=8)
+        axes[0].grid(True, alpha=0.3)
+
+        loss_cols = {
+            "box": "train/box_loss",
+            "seg": "train/seg_loss",
+            "cls": "train/cls_loss",
+            "dfl": "train/dfl_loss",
+        }
+        for label, col in loss_cols.items():
+            if col in df.columns:
+                axes[1].plot(epochs, df[col], label=label)
+        axes[1].set_title("YOLO Losses (train)")
+        axes[1].set_xlabel("Epoch")
+        axes[1].set_ylabel("Loss")
+        axes[1].legend(fontsize=8)
+        axes[1].grid(True, alpha=0.3)
+    else:
+        for ax_idx in (0, 1):
+            axes[ax_idx].text(
+                0.5, 0.5, "YOLO results.csv not found",
+                ha="center", va="center", transform=axes[ax_idx].transAxes,
+            )
+            axes[ax_idx].set_title("YOLO (missing)")
+
+    # ── U-Net++ losses ────────────────────────────────────────────────────────
+    if unet_history.get("train_losses"):
+        epochs_u = range(1, len(unet_history["train_losses"]) + 1)
+        axes[2].plot(epochs_u, unet_history["train_losses"], label="Train")
+        if unet_history.get("val_losses"):
+            axes[2].plot(epochs_u, unet_history["val_losses"], label="Val")
+        axes[2].set_title("U-Net++ Losses")
+        axes[2].set_xlabel("Epoch")
+        axes[2].set_ylabel("BCE + Dice Loss")
+        axes[2].legend()
+        axes[2].grid(True, alpha=0.3)
+    else:
+        axes[2].text(
+            0.5, 0.5, "U-Net++ training_history.json not found",
+            ha="center", va="center", transform=axes[2].transAxes,
+        )
+        axes[2].set_title("U-Net++ Losses (missing)")
+
+    # ── U-Net++ Dice / IoU ────────────────────────────────────────────────────
+    if unet_history.get("dice_per_epoch"):
+        epochs_u = range(1, len(unet_history["dice_per_epoch"]) + 1)
+        axes[3].plot(epochs_u, unet_history["dice_per_epoch"], label="Val Dice", color="green")
+        if unet_history.get("iou_per_epoch"):
+            axes[3].plot(epochs_u, unet_history["iou_per_epoch"], label="Val IoU", color="orange")
+        best_epoch = int(
+            unet_metrics.get("best_epoch")
+            or unet_history.get("best_epoch", 0)
+        )
+        if best_epoch > 0:
+            axes[3].axvline(
+                best_epoch, color="red", linestyle="--", linewidth=1,
+                label=f"best epoch {best_epoch}",
+            )
+        axes[3].set_title("U-Net++ Dice / IoU (val)")
+        axes[3].set_xlabel("Epoch")
+        axes[3].set_ylabel("Score")
+        axes[3].legend(fontsize=8)
+        axes[3].grid(True, alpha=0.3)
+    else:
+        axes[3].text(
+            0.5, 0.5, "U-Net++ dice history not found",
+            ha="center", va="center", transform=axes[3].transAxes,
+        )
+        axes[3].set_title("U-Net++ Dice/IoU (missing)")
+
+    # ── Infection loss ────────────────────────────────────────────────────────
+    if inf_history.get("loss"):
+        axes[4].plot(inf_history["epochs"], inf_history["loss"], color="steelblue")
+        axes[4].set_title("Infection Classifier Loss (train)")
+        axes[4].set_xlabel("Epoch")
+        axes[4].set_ylabel("BCE Loss")
+        axes[4].grid(True, alpha=0.3)
+    else:
+        axes[4].text(
+            0.5, 0.5, "Infection training_history.json not found\n(re-run §4.4)",
+            ha="center", va="center", transform=axes[4].transAxes,
+        )
+        axes[4].set_title("Infection Loss (missing)")
+
+    # ── Infection accuracy ────────────────────────────────────────────────────
+    if inf_history.get("train_accuracy"):
+        axes[5].plot(
+            inf_history["epochs"], inf_history["train_accuracy"],
+            label="Train acc (in-sample)", color="steelblue",
+        )
+        test_acc = inf_metrics.get("test_accuracy")
+        if test_acc is not None:
+            axes[5].axhline(
+                float(test_acc), color="crimson", linestyle=":",
+                linewidth=1.5,
+                label=f"test acc {float(test_acc):.3f} (held-out ref.)",
+            )
+        axes[5].set_title("Infection Accuracy")
+        axes[5].set_xlabel("Epoch")
+        axes[5].set_ylabel("Accuracy")
+        axes[5].set_ylim(0.0, 1.0)
+        axes[5].legend(fontsize=8)
+        axes[5].grid(True, alpha=0.3)
+        axes[5].text(
+            0.02, 0.02,
+            "Test line = final held-out reference only (not for epoch selection)",
+            transform=axes[5].transAxes, fontsize=7, color="dimgray",
+        )
+    else:
+        axes[5].text(
+            0.5, 0.5, "Infection accuracy history not found\n(re-run §4.4)",
+            ha="center", va="center", transform=axes[5].transAxes,
+        )
+        axes[5].set_title("Infection Accuracy (missing)")
+
+    fig.suptitle("Training Curves Dashboard — YOLO + U-Net++ + Infection", fontsize=14)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    print(f"  -> Saved training dashboard: {out_path}")
+    _display_figure_inline(out_path, fig)
+    return out_path
+
+
+def _select_confusion_cases(records: List[dict]) -> Dict[str, dict]:
+    """Pick the first alphabetically sorted valid case per TP/TN/FP/FN."""
+    sorted_records = sorted(records, key=lambda r: str(r.get("image", "")))
+    selected: Dict[str, dict] = {}
+    for outcome in ("TP", "TN", "FP", "FN"):
+        for rec in sorted_records:
+            if rec.get("prediction_outcome") == outcome and rec.get("image"):
+                selected[outcome] = rec
+                break
+    return selected
+
+
+def _build_gt_mask_from_coco(
+    test_coco: dict,
+    img_anns: Dict[int, list],
+    file_name: str,
+) -> np.ndarray:
+    """Build a binary reference mask for one test image from COCO polygons."""
+    img_info = next(
+        (img for img in test_coco["images"] if img["file_name"] == file_name),
+        None,
+    )
+    if img_info is None:
+        return np.zeros((1, 1), dtype=np.uint8)
+    gt_mask = np.zeros((img_info["height"], img_info["width"]), dtype=np.uint8)
+    for ann in img_anns.get(img_info["id"], []):
+        for seg in ann.get("segmentation", []):
+            if len(seg) < 6:
+                continue
+            poly = np.array(seg, dtype=np.float32).reshape(-1, 2).astype(np.int32)
+            cv2.fillPoly(gt_mask, [poly], 1)
+    return gt_mask
+
+
+def display_experiment_gallery(
+    script_dir: Path,
+    config: dict,
+    n_total: int = 4,
+    *,
+    regenerate_errors: bool = True,
+) -> Path:
+    """Display a reproducible 2×2 gallery (TP/TN/FP/FN) with metrics table.
+
+    Uses saved combined PNGs for TP/TN when available; regenerates FP/FN live
+    against the latest checkpoints for error-case verification.
+    """
+    import pandas as pd
+
+    if n_total != 4:
+        raise ValueError("display_experiment_gallery supports exactly 4 images (2×2).")
+
+    combined_dirs = get_combined_dirs(script_dir, config)
+    wound_areas_path = combined_dirs["results"] / "wound_areas.json"
+    if not wound_areas_path.is_file():
+        print("[INFO] wound_areas.json missing — running evaluate_combined() first ...")
+        evaluate_combined(config, script_dir)
+
+    with open(wound_areas_path, "r", encoding="utf-8") as f:
+        wound_areas = json.load(f)
+
+    selected = _select_confusion_cases(wound_areas)
+    missing = [o for o in ("TP", "TN", "FP", "FN") if o not in selected]
+    if missing:
+        print(f"[WARNING] No case found for: {', '.join(missing)}")
+
+    project_root = script_dir.parent.parent
+    test_ann_path = (project_root / config["ann_test"]).resolve()
+    data_root = (project_root / config["data_root"]).resolve()
+    with open(test_ann_path, "r", encoding="utf-8") as f:
+        test_coco = json.load(f)
+    cat_ids = {c["id"] for c in test_coco["categories"]}
+    img_anns: Dict[int, list] = {}
+    for ann in test_coco["annotations"]:
+        if ann["category_id"] in cat_ids:
+            img_anns.setdefault(ann["image_id"], []).append(ann)
+
+    device = get_device()
+    yolo_best = script_dir / "checkpoints" / "yolo" / "best.pt"
+    unet_best = get_unet_best_checkpoint_path(script_dir, config)
+    yolo_model = build_yolo_model(str(yolo_best))
+    unet_model = build_unet_model(config)
+    load_unet_checkpoint(unet_model, unet_best, device)
+    unet_model.to(device)
+    unet_model.eval()
+
+    pred_dir = combined_dirs["predictions"]
+    figures_dir = script_dir / "results" / "figures"
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    out_path = figures_dir / "experiment_gallery_4panel.png"
+
+    gallery_rows = []
+    panels: Dict[str, np.ndarray] = {}
+    layout = [("TP", 0, 0), ("TN", 0, 1), ("FP", 1, 0), ("FN", 1, 1)]
+
+    for outcome, _, _ in layout:
+        rec = selected.get(outcome)
+        if not rec:
+            continue
+        file_name = rec["image"]
+        stem = Path(file_name).stem
+        saved_png = pred_dir / f"combined_{stem}.png"
+        use_saved = saved_png.is_file() and outcome in ("TP", "TN")
+
+        if regenerate_errors and outcome in ("FP", "FN"):
+            use_saved = False
+
+        if use_saved:
+            overlay_bgr = cv2.imread(str(saved_png))
+            if overlay_bgr is None:
+                use_saved = False
+            else:
+                panels[outcome] = cv2.cvtColor(overlay_bgr, cv2.COLOR_BGR2RGB)
+                gallery_rows.append({
+                    "Outcome": outcome,
+                    "Image": file_name,
+                    "Dice": rec.get("dice"),
+                    "IoU": rec.get("iou"),
+                    "Metadata": rec.get("metadata_infection"),
+                    "Prediction": rec.get("infection"),
+                    "Area cm²": rec.get("area_cm2"),
+                    "Source": "saved PNG",
+                })
+
+        if outcome not in panels:
+            img_path = str(data_root / file_name)
+            gt_mask = _build_gt_mask_from_coco(test_coco, img_anns, file_name)
+            overlay_bgr, info = predict_single_image(
+                yolo_model, unet_model, img_path, device, config, gt_mask=gt_mask,
+            )
+            panels[outcome] = cv2.cvtColor(overlay_bgr, cv2.COLOR_BGR2RGB)
+            gallery_rows.append({
+                "Outcome": outcome,
+                "Image": file_name,
+                "Dice": info.get("dice", rec.get("dice")),
+                "IoU": info.get("iou", rec.get("iou")),
+                "Metadata": info.get("metadata_infection", rec.get("metadata_infection")),
+                "Prediction": info.get("infection", rec.get("infection")),
+                "Area cm²": info.get("wound_area_cm2", rec.get("area_cm2")),
+                "Source": "live predict_single_image",
+            })
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 12))
+    for outcome, row, col in layout:
+        ax = axes[row, col]
+        if outcome in panels:
+            ax.imshow(panels[outcome])
+            rec = selected.get(outcome, {})
+            subtitle = (
+                f"{outcome}: {rec.get('image', '')}\n"
+                f"Dice={rec.get('dice', 'N/A')} | IoU={rec.get('iou', 'N/A')}"
+            )
+            ax.set_title(subtitle, fontsize=9)
+        else:
+            ax.text(0.5, 0.5, f"{outcome}\n(no case found)", ha="center", va="center")
+            ax.set_title(outcome)
+        ax.axis("off")
+
+    fig.suptitle(
+        "Experiment Gallery — TP / TN / FP / FN (metadata-derived infection labels)",
+        fontsize=12,
+    )
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    print(f"  -> Saved experiment gallery: {out_path}")
+    _display_figure_inline(out_path, fig)
+
+    if gallery_rows:
+        gallery_df = pd.DataFrame(gallery_rows)
+        print("\n── Selected gallery cases (4-panel) ──")
+        display_cols = [
+            "Outcome", "Image", "Dice", "IoU",
+            "Metadata", "Prediction", "Area cm²", "Source",
+        ]
+        print(gallery_df[display_cols].to_string(index=False))
+
+        inf_summary_path = script_dir / "results" / "infection" / "metrics_summary.json"
+        inf_metrics = _load_json_if_exists(inf_summary_path)
+        if inf_metrics:
+            print("\n── Full test-set infection metrics (held-out) ──")
+            test_rows = {
+                "Metric": [
+                    "test_accuracy", "test_precision", "test_recall", "test_f1_score",
+                    "test_tp", "test_fp", "test_fn", "test_tn",
+                ],
+                "Value": [
+                    inf_metrics.get("test_accuracy"),
+                    inf_metrics.get("test_precision"),
+                    inf_metrics.get("test_recall"),
+                    inf_metrics.get("test_f1_score"),
+                    inf_metrics.get("test_tp"),
+                    inf_metrics.get("test_fp"),
+                    inf_metrics.get("test_fn"),
+                    inf_metrics.get("test_tn"),
+                ],
+            }
+            print(pd.DataFrame(test_rows).to_string(index=False))
+
+    return out_path
 
 
 def display_results_curves(results_dir: Path, max_show: int = 6) -> None:
@@ -2042,6 +2873,8 @@ def predict_single_image(
     image_path: str,
     device: torch.device,
     config: dict,
+    *,
+    gt_mask: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, dict]:
     """
     Predict on a single image and return the annotated image + info dict.
@@ -2058,6 +2891,7 @@ def predict_single_image(
     }
 
     info["infection_filename"] = _parse_infection_from_filename(Path(image_path).name)
+    info["metadata_infection"] = info["infection_filename"]
     info["confidence"] = max(pred.get("scores", [0.0]))
 
     classifier_path = Path(image_path).parent.parent / "checkpoints" / "infection" / "infection_classifier.pth"
@@ -2111,10 +2945,25 @@ def predict_single_image(
         infection_label = info["infection_filename"]
     info["infection"] = infection_label
     info["infection_prob"] = inf_result["infected_prob"]
+    info["prediction_outcome"] = _prediction_outcome(
+        info["metadata_infection"], infection_label,
+    )
+
+    if gt_mask is not None:
+        dice, iou = _compute_mask_metrics(combined_mask, gt_mask)
+        info["dice"] = round(dice, 6)
+        info["iou"] = round(iou, 6)
+    else:
+        info["dice"] = None
+        info["iou"] = None
 
     overlay = draw_info_panel(
         overlay, area_cm2, area_px, ppcm,
         infection_label, inf_result["infected_prob"],
+        dice=info.get("dice"),
+        iou=info.get("iou"),
+        metadata_infection=info["metadata_infection"],
+        prediction_outcome=info.get("prediction_outcome"),
     )
 
     return overlay, info
@@ -2130,18 +2979,32 @@ def save_global_metrics_summary(
     combined_metrics: dict,
     config: dict,
     results_dir: Path,
+    infection_metrics: Optional[dict] = None,
 ) -> None:
     """Save a unified metrics_summary.json at the experiment root."""
     summary = {
         "yolo": yolo_metrics,
         "unet": unet_metrics,
         "combined": combined_metrics,
+        "infection": infection_metrics or {},
         "config": config,
         "timestamp": datetime.now().isoformat(),
     }
     path = results_dir / "metrics_summary.json"
     with open(path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, default=str)
+    script_dir = results_dir.parent
+    manifest = build_experiment_manifest(
+        config,
+        script_dir,
+        run_mode="evaluate_only",
+        checkpoint_paths=[
+            script_dir / "checkpoints" / "yolo" / "best.pt",
+            get_unet_best_checkpoint_path(script_dir, config),
+            script_dir / "checkpoints" / "infection" / "infection_classifier.pth",
+        ],
+    )
+    save_experiment_manifest(manifest, results_dir)
     print(f"  -> Global metrics summary: {path}")
 
 
@@ -2189,7 +3052,7 @@ def main(stage: str = "all") -> dict:
     results_root = SCRIPT_DIR / "results"
     save_global_metrics_summary(
         results["yolo"], results["unet"], results["combined"],
-        config, results_root,
+        config, results_root, infection_metrics=results.get("infection"),
     )
     generate_report(
         results["yolo"], results["unet"], results["combined"],
