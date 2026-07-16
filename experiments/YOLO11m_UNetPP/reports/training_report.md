@@ -1,6 +1,6 @@
 # YOLO11m + U-Net++ Training Report
 
-Generated: 2026-05-24 07:43:16
+Generated: 2026-07-16 04:00:02
 
 ---
 
@@ -110,26 +110,18 @@ Generated: 2026-05-24 07:43:16
 
 | Metric | Value |
 |--------|-------|
-| bbox_mAP50 | 0.8620 |
-| bbox_mAP50_95 | 0.6249 |
-| segm_mAP50 | 0.6751 |
-| segm_mAP50_95 | 0.3197 |
-| combined_AP50 | 0.7685 |
+| bbox_mAP50 | 0.4428 |
+| bbox_mAP50_95 | 0.2008 |
+| segm_mAP50 | 0.2825 |
+| segm_mAP50_95 | 0.0712 |
+| combined_AP50 | 0.3626 |
 
 ---
 
 ## U-Net++ Results
 
-- **Best Dice (val):** 0.8270 at epoch 28
-- **Training time:** 4032s
-
-### Test Metrics
-
-| Metric | Value |
-|--------|-------|
-| dice | 0.7989 |
-| iou | 0.6867 |
-| pixel_accuracy | 0.9183 |
+- **Best Dice (val):** 0.0000 at epoch 0
+- **Training time:** 0s
 
 ---
 
@@ -137,22 +129,22 @@ Generated: 2026-05-24 07:43:16
 
 | Metric | Value |
 |--------|-------|
-| mean_dice | 0.7647 |
-| mean_iou | 0.6604 |
-| mean_dice_conditional | 0.7647 |
-| mean_iou_conditional | 0.6604 |
+| mean_dice | 0.4824 |
+| mean_iou | 0.3547 |
+| mean_dice_conditional | 0.4824 |
+| mean_iou_conditional | 0.3547 |
 | n_images_total | 55 |
 | n_images_evaluated | 55 |
 | n_images_missed | 0 |
 | n_predictions_saved | 8 |
-| coco_bbox_AP | 0.5797 |
-| coco_bbox_AP50 | 0.7913 |
-| coco_bbox_AP75 | 0.6502 |
-| coco_segm_AP | 0.3214 |
-| coco_segm_AP50 | 0.6513 |
-| coco_segm_AP75 | 0.3073 |
-| coco_combined_AP50 | 0.7213 |
-| coco_combined_AP75 | 0.4788 |
+| coco_bbox_AP | 0.1327 |
+| coco_bbox_AP50 | 0.3084 |
+| coco_bbox_AP75 | 0.1045 |
+| coco_segm_AP | 0.0334 |
+| coco_segm_AP50 | 0.1717 |
+| coco_segm_AP75 | 0.0000 |
+| coco_combined_AP50 | 0.2401 |
+| coco_combined_AP75 | 0.0522 |
 
 ---
 

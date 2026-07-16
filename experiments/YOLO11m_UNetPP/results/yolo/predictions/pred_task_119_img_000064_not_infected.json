@@ -1,0 +1,9 @@
+{
+  "image": "task_119_img_000064_not_infected.jpg",
+  "confidence": null,
+  "wound_area_cm2": null,
+  "wound_area_px": 0,
+  "infection": "not_infected",
+  "infection_prob": null,
+  "marker_detected": false
+}

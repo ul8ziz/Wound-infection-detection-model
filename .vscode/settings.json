@@ -1,0 +1,6 @@
+{
+  "python.condaPath": "C:\\Users\\ul8ziz\\anaconda3\\Scripts\\conda.exe",
+  "python.defaultInterpreterPath": "C:\\Users\\ul8ziz\\anaconda3\\envs\\venv_cuda\\python.exe",
+  "python.terminal.activateEnvironment": true,
+  "jupyter.kernels.excludePythonEnvironments": []
+}

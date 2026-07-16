@@ -104,6 +104,32 @@ def build_yolo_model(weights: str = "yolo11m-seg.pt"):
     return model
 
 
+def _resolve_yolo_run_name(yolo_project: Path, base_name: str = "train") -> str:
+    """
+    Pick a YOLO run directory name that will not collide with locked files.
+
+    If the previous ``train/`` folder can be archived, reuse ``train``.
+    Otherwise start a timestamped run and leave the old folder untouched.
+    """
+    run_dir = yolo_project / base_name
+    if not run_dir.exists():
+        return base_name
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    archive_dir = yolo_project / f"{base_name}_prev_{stamp}"
+    try:
+        run_dir.rename(archive_dir)
+        print(f"  Archived previous YOLO run -> {archive_dir.name}")
+        return base_name
+    except OSError:
+        run_name = f"{base_name}_{stamp}"
+        print(
+            f"  Previous YOLO run is locked on Windows; "
+            f"starting a fresh run -> {run_name}"
+        )
+        return run_name
+
+
 def train_yolo(config: dict, script_dir: Path) -> dict:
     """
     Train YOLO11m-seg using Ultralytics API.
@@ -123,6 +149,8 @@ def train_yolo(config: dict, script_dir: Path) -> dict:
     model = build_yolo_model(yolo_cfg.get("model", "yolo11m-seg.pt"))
     yolo_project = script_dir / "checkpoints" / "yolo"
     yolo_project.mkdir(parents=True, exist_ok=True)
+    run_name = _resolve_yolo_run_name(yolo_project, "train")
+    train_dir = yolo_project / run_name
 
     train_results = model.train(
         data=str(dataset_yaml),
@@ -151,17 +179,18 @@ def train_yolo(config: dict, script_dir: Path) -> dict:
         cos_lr=yolo_cfg.get("cos_lr", False),
         warmup_epochs=yolo_cfg.get("warmup_epochs", 3.0),
         project=str(yolo_project),
-        name="train",
-        exist_ok=True,
+        name=run_name,
+        exist_ok=False,
         verbose=True,
         workers=config.get("num_workers", 0),
     )
 
     print("\nCopying YOLO results...")
-    _copy_yolo_outputs(yolo_project / "train", script_dir)
+    _copy_yolo_outputs(train_dir, script_dir)
 
-    summary = _extract_yolo_metrics(yolo_project / "train")
+    summary = _extract_yolo_metrics(train_dir)
     summary["training_completed"] = True
+    summary["run_name"] = run_name
     return summary
 
 
@@ -806,7 +835,7 @@ def resolve_checkpoint_path(
     for candidate in candidates:
         if candidate.exists():
             return candidate
-    return candidates[0]
+    return None
 
 
 def build_unet_criterion(unet_cfg: dict) -> nn.Module:
@@ -873,12 +902,15 @@ def train_unet(config: dict, script_dir: Path) -> dict:
 
     resume_path = resolve_checkpoint_path(unet_cfg.get("resume_checkpoint"), script_dir)
     if resume_path is not None:
-        if not resume_path.exists():
-            raise FileNotFoundError(f"Resume checkpoint not found: {resume_path}")
         ckpt_meta = load_unet_checkpoint(model, resume_path, device)
         print(f"  Resumed from checkpoint: {resume_path}")
         if isinstance(ckpt_meta, dict) and "epoch" in ckpt_meta:
             print(f"  Resume epoch: {ckpt_meta['epoch']}")
+    elif unet_cfg.get("resume_checkpoint"):
+        print(
+            "  [WARNING] Resume checkpoint not found — training U-Net++ from scratch: "
+            f"{unet_cfg.get('resume_checkpoint')}"
+        )
 
     if bool(unet_cfg.get("freeze_encoder", False)) and hasattr(model, "encoder"):
         for param in model.encoder.parameters():
@@ -1465,16 +1497,108 @@ def _parse_infection_label(filename: str) -> Optional[int]:
     return None
 
 
+def _collect_infection_features(
+    yolo_model,
+    unet_model: "nn.Module",
+    device: "torch.device",
+    config: dict,
+    ann_path: Path,
+    img_root: Path,
+    split_name: str,
+) -> tuple:
+    """Extract (features, labels) for one data split.
+
+    Returns (features_list, labels_list, skipped_no_mask, skipped_no_label).
+    """
+    features_list: list = []
+    labels_list: list = []
+    skipped_no_label = 0
+    skipped_no_mask = 0
+
+    with open(ann_path, "r", encoding="utf-8") as f:
+        coco = json.load(f)
+
+    total = len(coco["images"])
+    for i, img_info in enumerate(coco["images"]):
+        label = _parse_infection_label(img_info["file_name"])
+        if label is None:
+            skipped_no_label += 1
+            continue
+
+        img_path = str(img_root / img_info["file_name"])
+        if not Path(img_path).exists():
+            skipped_no_mask += 1
+            continue
+
+        pred = combined_inference(
+            yolo_model, unet_model, img_path, device, config, enable_tta=False
+        )
+        if "error" in pred or not pred["masks"]:
+            skipped_no_mask += 1
+            continue
+
+        image_rgb = cv2.cvtColor(cv2.imread(img_path), cv2.COLOR_BGR2RGB)
+        combined_mask = np.zeros(image_rgb.shape[:2], dtype=np.uint8)
+        for m in pred["masks"]:
+            if m.shape == image_rgb.shape[:2]:
+                combined_mask = np.maximum(combined_mask, m)
+
+        feats = extract_wound_features(image_rgb, combined_mask)
+        features_list.append(feats)
+        labels_list.append(label)
+
+        if (i + 1) % 20 == 0:
+            print(
+                f"  [{split_name}] {i + 1}/{total} images processed "
+                f"({len(features_list)} usable)"
+            )
+
+    return features_list, labels_list, skipped_no_mask, skipped_no_label
+
+
+def _compute_binary_metrics(
+    model: "nn.Module",
+    X_norm: "torch.Tensor",
+    y: "torch.Tensor",
+) -> dict:
+    """Return accuracy, precision, recall, F1 for a binary classifier."""
+    with torch.no_grad():
+        preds = (torch.sigmoid(model(X_norm)) > 0.5).float()
+    tp = float(((preds == 1) & (y == 1)).sum())
+    fp = float(((preds == 1) & (y == 0)).sum())
+    fn = float(((preds == 0) & (y == 1)).sum())
+    tn = float(((preds == 0) & (y == 0)).sum())
+    accuracy = (tp + tn) / max(tp + tn + fp + fn, 1)
+    precision = tp / max(tp + fp, 1)
+    recall = tp / max(tp + fn, 1)
+    f1 = 2 * precision * recall / max(precision + recall, 1e-6)
+    return {
+        "accuracy": round(accuracy, 6),
+        "precision": round(precision, 6),
+        "recall": round(recall, 6),
+        "f1_score": round(f1, 6),
+        "tp": int(tp), "fp": int(fp), "fn": int(fn), "tn": int(tn),
+    }
+
+
 def train_infection_classifier(
     config: dict,
     script_dir: Path,
 ) -> dict:
-    """
-    Train infection classifier using wound ROI features extracted via
-    the combined pipeline, with labels from filenames.
+    """Train the infection classifier on train split only, then evaluate on
+    the held-out test split for independent generalization assessment.
+
+    Training data: ann_train  (wound-annotated training images)
+    Evaluation:    ann_test   (55-image wound-only test subset, never seen during training)
+
+    The val split is intentionally excluded from training to preserve its role
+    in model selection for YOLO/U-Net++. Including it here would contaminate
+    the development pipeline with test-set information.
     """
     print("\n" + "=" * 60)
     print("Stage 4: Training Infection Classifier")
+    print("  Train split: ann_train only")
+    print("  Test  split: ann_test  (independent, not seen during training)")
     print("=" * 60)
 
     device = get_device()
@@ -1483,9 +1607,18 @@ def train_infection_classifier(
     data_root_train = (project_root / config.get("data_root_train", config["data_root"])).resolve()
 
     yolo_best = script_dir / "checkpoints" / "yolo" / "best.pt"
-    unet_best = script_dir / "checkpoints" / "unet" / "best_model.pth"
-    if not yolo_best.exists() or not unet_best.exists():
-        print("[ERROR] Train YOLO and U-Net++ first.")
+    unet_best = get_unet_best_checkpoint_path(script_dir, config)
+    if not yolo_best.exists():
+        print(f"[ERROR] YOLO checkpoint not found: {yolo_best}")
+        print("        Run: python train_model.py --stage yolo")
+        return {}
+    if not unet_best.exists():
+        print(f"[ERROR] U-Net++ checkpoint not found: {unet_best}")
+        print("        Run: python train_model.py --stage unet")
+        return {}
+
+    if "ann_test" not in config:
+        print("[ERROR] ann_test not found in config — cannot run independent evaluation.")
         return {}
 
     yolo_model = build_yolo_model(str(yolo_best))
@@ -1494,116 +1627,151 @@ def train_infection_classifier(
     unet_model.to(device)
     unet_model.eval()
 
-    features_list = []
-    labels_list = []
+    # ── collect train features (training data only) ──────────────────────────
+    print("\n[1/2] Extracting features from TRAIN split ...")
+    train_ann = (project_root / config["ann_train"]).resolve()
+    train_feats, train_labels, skip_mask_tr, skip_lbl_tr = _collect_infection_features(
+        yolo_model, unet_model, device, config,
+        ann_path=train_ann, img_root=data_root_train, split_name="train",
+    )
+    print(
+        f"  Train: {len(train_feats)} usable  "
+        f"(skipped no-mask={skip_mask_tr}, no-label={skip_lbl_tr})"
+    )
 
-    for split, ann_key in [("train", "ann_train"), ("val", "ann_val")]:
-        ann_path = (project_root / config[ann_key]).resolve()
-        img_root = data_root_train if ann_key == "ann_train" else data_root
-        with open(ann_path, "r", encoding="utf-8") as f:
-            coco = json.load(f)
-
-        for img_info in coco["images"]:
-            label = _parse_infection_label(img_info["file_name"])
-            if label is None:
-                continue
-
-            img_path = str(img_root / img_info["file_name"])
-            if not Path(img_path).exists():
-                continue
-
-            pred = combined_inference(yolo_model, unet_model, img_path, device, config, enable_tta=False)
-            if "error" in pred or not pred["masks"]:
-                continue
-
-            image_rgb = cv2.cvtColor(cv2.imread(img_path), cv2.COLOR_BGR2RGB)
-            combined_mask = np.zeros(image_rgb.shape[:2], dtype=np.uint8)
-            for m in pred["masks"]:
-                if m.shape == image_rgb.shape[:2]:
-                    combined_mask = np.maximum(combined_mask, m)
-
-            feats = extract_wound_features(image_rgb, combined_mask)
-            features_list.append(feats)
-            labels_list.append(label)
-
-    if len(features_list) < 10:
-        print(f"[ERROR] Only {len(features_list)} samples — too few for training.")
+    if len(train_feats) < 10:
+        print(f"[ERROR] Only {len(train_feats)} training samples — too few.")
         return {}
 
-    X = torch.tensor(np.array(features_list), dtype=torch.float32)
-    y = torch.tensor(labels_list, dtype=torch.float32).unsqueeze(1)
-    print(f"  Samples: {len(X)} (infected={int(y.sum())}, non-infected={len(y) - int(y.sum())})")
+    X_train = torch.tensor(np.array(train_feats), dtype=torch.float32)
+    y_train = torch.tensor(train_labels, dtype=torch.float32).unsqueeze(1)
+    n_infected_train = int(y_train.sum())
+    n_not_train = len(y_train) - n_infected_train
+    print(
+        f"  infected={n_infected_train}, non-infected={n_not_train}"
+    )
 
-    feat_mean = X.mean(dim=0)
-    feat_std = X.std(dim=0).clamp(min=1e-6)
-    X_norm = (X - feat_mean) / feat_std
+    # ── collect test features (held out, never used during training) ─────────
+    print("\n[2/2] Extracting features from TEST split (held out) ...")
+    test_ann = (project_root / config["ann_test"]).resolve()
+    test_feats, test_labels, skip_mask_te, skip_lbl_te = _collect_infection_features(
+        yolo_model, unet_model, device, config,
+        ann_path=test_ann, img_root=data_root, split_name="test",
+    )
+    print(
+        f"  Test:  {len(test_feats)} usable  "
+        f"(skipped no-mask={skip_mask_te}, no-label={skip_lbl_te})"
+    )
 
-    model = WoundInfectionClassifier(in_features=X.shape[1])
+    # ── normalise using TRAIN statistics only ────────────────────────────────
+    feat_mean = X_train.mean(dim=0)
+    feat_std = X_train.std(dim=0).clamp(min=1e-6)
+    X_train_norm = ((X_train - feat_mean) / feat_std).to(device)
+    y_train_dev = y_train.to(device)
+
+    # ── build and train model ─────────────────────────────────────────────────
+    model = WoundInfectionClassifier(in_features=X_train.shape[1])
     model.to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
 
-    pos_count = y.sum().item()
-    neg_count = len(y) - pos_count
+    pos_count = float(y_train.sum())
+    neg_count = len(y_train) - pos_count
     pos_weight = torch.tensor([neg_count / max(pos_count, 1)]).to(device)
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
 
-    X_norm = X_norm.to(device)
-    y = y.to(device)
-
+    print("\nTraining infection classifier (train split only) ...")
     model.train()
     for epoch in range(1, 201):
         optimizer.zero_grad()
-        logits = model(X_norm)
-        loss = criterion(logits, y)
+        logits = model(X_train_norm)
+        loss = criterion(logits, y_train_dev)
         loss.backward()
         optimizer.step()
 
         if epoch % 50 == 0:
             with torch.no_grad():
                 preds = (torch.sigmoid(logits) > 0.5).float()
-                acc = (preds == y).float().mean().item()
-            print(f"  Epoch {epoch}: loss={loss.item():.4f}, acc={acc:.4f}")
+                acc = (preds == y_train_dev).float().mean().item()
+            print(f"  Epoch {epoch}: loss={loss.item():.4f}, train_acc={acc:.4f}")
 
+    # ── save checkpoint ───────────────────────────────────────────────────────
     ckpt_dir = script_dir / "checkpoints" / "infection"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     torch.save({
         "model_state_dict": model.state_dict(),
         "feat_mean": feat_mean.cpu(),
         "feat_std": feat_std.cpu(),
-        "in_features": X.shape[1],
+        "in_features": X_train.shape[1],
     }, ckpt_dir / "infection_classifier.pth")
 
-    with torch.no_grad():
-        preds = (torch.sigmoid(model(X_norm)) > 0.5).float()
-        train_acc = (preds == y).float().mean().item()
-        tp = ((preds == 1) & (y == 1)).sum().item()
-        fp = ((preds == 1) & (y == 0)).sum().item()
-        fn = ((preds == 0) & (y == 1)).sum().item()
-        precision = tp / max(tp + fp, 1)
-        recall = tp / max(tp + fn, 1)
-        f1 = 2 * precision * recall / max(precision + recall, 1e-6)
+    # ── train metrics (in-sample, for reference only) ─────────────────────────
+    model.eval()
+    train_metrics = _compute_binary_metrics(model, X_train_norm, y_train_dev)
 
+    # ── test metrics (independent, generalization estimate) ───────────────────
+    test_has_results = len(test_feats) >= 5
+    if test_has_results:
+        X_test = torch.tensor(np.array(test_feats), dtype=torch.float32)
+        y_test = torch.tensor(test_labels, dtype=torch.float32).unsqueeze(1)
+        X_test_norm = ((X_test - feat_mean.cpu()) / feat_std.cpu()).to(device)
+        y_test_dev = y_test.to(device)
+        test_metrics = _compute_binary_metrics(model, X_test_norm, y_test_dev)
+        n_infected_test = int(y_test.sum())
+        n_not_test = len(y_test) - n_infected_test
+    else:
+        print("[WARNING] Too few test samples for evaluation — skipping test metrics.")
+        test_metrics = {}
+        n_infected_test = 0
+        n_not_test = 0
+
+    # ── print results ─────────────────────────────────────────────────────────
+    print("\n── Train metrics (in-sample, NOT generalization) ──")
+    for k, v in train_metrics.items():
+        print(f"  train_{k}: {v:.4f}" if isinstance(v, float) else f"  train_{k}: {v}")
+
+    if test_has_results:
+        print("\n── Test metrics (independent, held-out — generalization estimate) ──")
+        for k, v in test_metrics.items():
+            print(f"  test_{k}: {v:.4f}" if isinstance(v, float) else f"  test_{k}: {v}")
+    print()
+
+    # ── build summary ─────────────────────────────────────────────────────────
     summary = {
-        "train_accuracy": train_acc,
-        "precision": precision,
-        "recall": recall,
-        "f1_score": f1,
-        "n_samples": len(X),
-        "n_infected": int(pos_count),
-        "n_non_infected": int(neg_count),
+        "evaluation_note": (
+            "train_* metrics are in-sample (train split only). "
+            "test_* metrics are independent (held-out test split, never seen during training). "
+            "Labels are derived from filename metadata (-not-), not confirmed clinical diagnosis."
+        ),
+        "train_n_samples": len(X_train),
+        "train_n_infected": n_infected_train,
+        "train_n_non_infected": n_not_train,
+        "train_accuracy": train_metrics["accuracy"],
+        "train_precision": train_metrics["precision"],
+        "train_recall": train_metrics["recall"],
+        "train_f1_score": train_metrics["f1_score"],
     }
+
+    if test_has_results:
+        summary.update({
+            "test_n_samples": len(X_test),
+            "test_n_infected": n_infected_test,
+            "test_n_non_infected": n_not_test,
+            "test_accuracy": test_metrics["accuracy"],
+            "test_precision": test_metrics["precision"],
+            "test_recall": test_metrics["recall"],
+            "test_f1_score": test_metrics["f1_score"],
+            "test_tp": test_metrics["tp"],
+            "test_fp": test_metrics["fp"],
+            "test_fn": test_metrics["fn"],
+            "test_tn": test_metrics["tn"],
+        })
 
     results_dir = script_dir / "results" / "infection"
     results_dir.mkdir(parents=True, exist_ok=True)
     with open(results_dir / "metrics_summary.json", "w", encoding="utf-8") as f:
-        json.dump(summary, f, indent=2)
+        json.dump(summary, f, indent=2, ensure_ascii=False)
 
-    for k, v in summary.items():
-        if isinstance(v, float):
-            print(f"  {k}: {v:.4f}")
-        else:
-            print(f"  {k}: {v}")
-
+    print(f"  Saved: {results_dir / 'metrics_summary.json'}")
     return summary
 
 

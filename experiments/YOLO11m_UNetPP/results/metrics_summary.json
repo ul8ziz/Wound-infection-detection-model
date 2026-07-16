@@ -1,85 +1,33 @@
 {
   "yolo": {
-    "bbox_mAP50": 0.8619987273830645,
-    "bbox_mAP50_95": 0.6249449009109039,
-    "segm_mAP50": 0.6751011366336466,
-    "segm_mAP50_95": 0.3196842613439326,
-    "combined_AP50": 0.7685499320083555
+    "bbox_mAP50": 0.4428428593626465,
+    "bbox_mAP50_95": 0.20076947072438797,
+    "segm_mAP50": 0.2824509987497605,
+    "segm_mAP50_95": 0.07117251823832552,
+    "combined_AP50": 0.3626469290562035
   },
   "unet": {
-    "best_dice": 0.8270386867234129,
-    "best_epoch": 28,
-    "training_time_s": 4031.621983528137,
-    "test_metrics": {
-      "dice": 0.7988646724391276,
-      "iou": 0.6867445073785058,
-      "pixel_accuracy": 0.9183279501425253,
-      "n_samples": 74
-    },
-    "config": {
-      "architecture": "unetplusplus",
-      "encoder": "efficientnet-b1",
-      "encoder_weights": "imagenet",
-      "input_size": [
-        512,
-        512
-      ],
-      "in_channels": 3,
-      "classes": 1,
-      "batch_size": 4,
-      "epochs": 60,
-      "lr": 3e-05,
-      "weight_decay": 0.0005,
-      "optimizer": "AdamW",
-      "scheduler": "CosineAnnealingLR",
-      "scheduler_T_max": 55,
-      "scheduler_eta_min": 1e-06,
-      "early_stop_patience": 10,
-      "loss_type": "focal_dice_boundary",
-      "loss_bce_weight": 0.4,
-      "loss_dice_weight": 0.6,
-      "loss_boundary_weight": 0.35,
-      "boundary_kernel_size": 3,
-      "focal_alpha": 0.25,
-      "focal_gamma": 2.0,
-      "roi_padding": 0.2,
-      "roi_crop_mode": "mixed",
-      "eval_roi_crop_mode": "yolo_predicted",
-      "roi_mix_weights": {
-        "gt": 0.45,
-        "jitter": 0.3,
-        "yolo_cached": 0.25
-      },
-      "roi_jitter": {
-        "scale_min": 0.85,
-        "scale_max": 1.15,
-        "shift_frac": 0.1
-      },
-      "yolo_roi_cache_path": "experiments/YOLO11m_UNetPP/results/roi_cache/train_yolo_rois.json",
-      "eval_yolo_roi_cache_path": "experiments/YOLO11m_UNetPP/results/roi_cache/val_yolo_rois.json",
-      "test_yolo_roi_cache_path": "experiments/YOLO11m_UNetPP/results/roi_cache/test_yolo_rois.json",
-      "yolo_match_iou_min": 0.05,
-      "resume_checkpoint": "experiments/YOLO11m_UNetPP/checkpoints/unet/best_phase7_finetune_roi20/best_model.pth",
-      "freeze_encoder": false
-    }
+    "best_dice": 0.0,
+    "best_epoch": 0,
+    "training_time_s": 0
   },
   "combined": {
-    "mean_dice": 0.7646884597478668,
-    "mean_iou": 0.6604234271630007,
-    "mean_dice_conditional": 0.7646884597478668,
-    "mean_iou_conditional": 0.6604234271630007,
+    "mean_dice": 0.48241254094337416,
+    "mean_iou": 0.354650488062525,
+    "mean_dice_conditional": 0.48241254094337416,
+    "mean_iou_conditional": 0.354650488062525,
     "n_images_total": 55,
     "n_images_evaluated": 55,
     "n_images_missed": 0,
     "n_predictions_saved": 8,
-    "coco_bbox_AP": 0.5796785464759059,
-    "coco_bbox_AP50": 0.7913476387855791,
-    "coco_bbox_AP75": 0.6502332123182195,
-    "coco_segm_AP": 0.32144334615202963,
-    "coco_segm_AP50": 0.6513203286913058,
-    "coco_segm_AP75": 0.3072798475744919,
-    "coco_combined_AP50": 0.7213339837384425,
-    "coco_combined_AP75": 0.4787565299463557
+    "coco_bbox_AP": 0.13274602010962303,
+    "coco_bbox_AP50": 0.30836346792573993,
+    "coco_bbox_AP75": 0.10448718072666557,
+    "coco_segm_AP": 0.03342492448135706,
+    "coco_segm_AP50": 0.17174147755332808,
+    "coco_segm_AP75": 0.0,
+    "coco_combined_AP50": 0.240052472739534,
+    "coco_combined_AP75": 0.05224359036333279
   },
   "config": {
     "seed": 42,
@@ -206,5 +154,5 @@
     },
     "_config_path": "E:\\GitHub\\Wound-infection-detection-model\\experiments\\YOLO11m_UNetPP\\config.yaml"
   },
-  "timestamp": "2026-05-24T07:43:16.692012"
+  "timestamp": "2026-07-16T04:00:02.027867"
 }

@@ -1,9 +1,9 @@
 {
   "image": "images/task_224_img_000322_infected.jpg",
-  "confidence": 0.9081369698047638,
-  "wound_area_cm2": 4.050820419325434,
-  "wound_area_px": 9875,
+  "confidence": 0.05,
+  "wound_area_cm2": 40.13184636582844,
+  "wound_area_px": 103558,
   "infection": "infected",
-  "infection_prob": 0.8960369825363159,
+  "infection_prob": 0.7402570843696594,
   "marker_detected": true
 }

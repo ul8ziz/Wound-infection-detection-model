@@ -2,7 +2,7 @@
 
 This folder contains the **code and outputs** for the combined YOLO11m-seg + U-Net++ wound detection, segmentation, and infection classification experiment.
 
-- **Code:** `training_pipeline.ipynb` (interactive), `train_model.py` (CLI + all stages), `pipeline_utils.py` (data handling)
+- **Code:** `training_pipeline.ipynb` (canonical interactive notebook, §1–§6), `train_model.py` (CLI + all stages), `pipeline_utils.py` (data handling)
 - **Config:** `config.yaml` (all hyperparameters)
 - **Outputs:** `checkpoints/`, `results/`, `reports/`
 - **Data:** Shared at `../../data` (not copied here)
@@ -30,6 +30,20 @@ All models are trained independently, then combined at inference.
 ### Option A: Notebook (interactive)
 
 Open `training_pipeline.ipynb` from this folder, set Kernel cwd to `experiments/YOLO11m_UNetPP`, run cells in order.
+
+**Notebook section map:**
+
+| Section | Purpose |
+|---------|---------|
+| §0 Front Matter | Objective, pipeline description, wound area formula, outline |
+| §1 Environment & Configuration | Imports, `config.yaml`, device setup |
+| §2 Data Preparation & Validation | COCO→YOLO conversion, U-Net++ ROI loaders, eval dataset |
+| §3 Pre-Training Inspection | ROI sample visualization, model initialization |
+| §4 Model Training | 4.1 YOLO, 4.2 U-Net++, 4.3 save training curves + YOLO samples, 4.4 infection classifier (train → test) |
+| §5 Quantitative Evaluation | `evaluate_combined`, COCO metrics tables, training curves |
+| §6 Qualitative Analysis and Summary | Prediction overlays, combined report, checkpoint inventory |
+
+Sections §5 and §6 each contain a self-contained bootstrap so they can be run independently after training.
 
 ### Option B: CLI
 
